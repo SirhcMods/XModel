@@ -43,17 +43,14 @@ def compare_meshes(first: bpy.types.Mesh, second: bpy.types.Mesh) -> bool:
             and len(first.edges) == len(second.edges))
 
 
-def compare_paths(first: str, second: str) -> bool:
-    """Compares that to paths are identical. Respects OS case sensitivity rules for the filesystem.
-
-    :param first: First path.
-    :param second: Second path.
-    :return: True if paths are identical, else False.
-    """
-    first = os.path.realpath(first)
-    second = os.path.realpath(second)
-
-    return (first.lower() == second.lower()) if FS_CASE_INSENSITIVE else (first == second)
+def compare_paths(first, second):
+    try:
+        first_real = os.path.realpath(first)
+        second_real = os.path.realpath(second)
+    except OSError:
+        # Cannot resolve path (network path missing, invalid UNC, etc.)
+        return False
+    return os.path.normcase(first_real) == os.path.normcase(second_real)
 
 
 DataBlock: t.TypeAlias = bpy.types.Object | bpy.types.Material | bpy.types.Image
