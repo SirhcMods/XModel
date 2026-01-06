@@ -1,0 +1,20 @@
+name: pycodestyle
+
+on: [push]
+
+jobs:
+  build:
+    name: Run pycodestyle
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    - name: Install pycodestyle
+      run: |
+        sudo apt update
+        sudo apt install pycodestyle -y
+    - name: Run pycodestyle
+      run: |
+        pycodestyle --statistics --verbose --exclude=**/third_party/*
+

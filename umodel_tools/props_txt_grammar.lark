@@ -1,0 +1,43 @@
+start: (definition)*
+
+definition: IDENTIFIER [ "[" INT_LITERAL "]" ] "=" (structured_block | const | path | empty_list | const_list) [","]
+
+structured_block: "{" (definition)* "}"
+path: path_type path_value
+path_type: IDENTIFIER
+path_value: SINGLE_QUOTED_STRING
+
+const_list: "{" const ("," const)* "}"
+empty_list: "{" (",")* "}"
+const: ANY_LITERAL | DOUBLE_QUOTED_STRING | SINGLE_QUOTED_STRING | UNESCAPED_STRING
+
+// terminals
+    COMMENT: "//" /[^\n]/*
+    %ignore COMMENT
+
+    UNESCAPED_STRING: /[^,}\n]+/
+    IDENTIFIER.1: /[A-Za-z_][A-Za-z0-9_]*/
+
+    ANY_LITERAL.1: NUMERIC_LITERAL | BOOL_LITERAL
+    NUMERIC_LITERAL: ["+"|"-"] (INT_LITERAL | DOUBLE_LITERAL)
+
+    BOOL_LITERAL: /\btrue\b|\bfalse\b/
+    DOUBLE_LITERAL: /([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/
+
+    // int literal
+        INT_LITERAL: DECIMAL_INT_LITERAL
+            | HEXADECIMAL_INT_LITERAL
+            | BINARY_INT_LITERAL
+
+        DECIMAL_INT_LITERAL: /\b\d+\b/
+        HEXADECIMAL_INT_LITERAL: /0x[0-9a-fA-F]+/
+        BINARY_INT_LITERAL: /0b[01]+/
+    // end int literal
+
+    SINGLE_QUOTED_STRING.1: /'[^']*'/
+    DOUBLE_QUOTED_STRING.1: /"[^']*"/
+
+// end terminals
+
+%import common.WS
+%ignore WS // ignore whitespace
