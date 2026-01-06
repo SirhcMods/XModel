@@ -1050,7 +1050,7 @@ def pskimport(filepath,
         if Normals is not None:
             mesh_data.polygons.foreach_set("use_smooth", [True] * len(mesh_data.polygons))
             mesh_data.normals_split_custom_set_from_vertices(Normals)
-            mesh_data.use_auto_smooth = True
+            #mesh_data.use_auto_smooth = True
 
     #===================================================================================================
     # UV. Set.
