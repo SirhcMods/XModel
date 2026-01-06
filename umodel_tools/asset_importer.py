@@ -23,7 +23,7 @@ class AssetImporter:
     load_pbr_maps: bpy.props.BoolProperty(
         name="Load PBR textures",
         description="Load normal maps, specular, roughness, etc into materials. Experimental",
-        default=True
+        default=False
     )
 
     import_backface_culling: bpy.props.BoolProperty(
