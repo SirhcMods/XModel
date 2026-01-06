@@ -656,15 +656,15 @@ class MapImporter(asset_importer.AssetImporter):
                         static_mesh.link_object_instance(obj, import_collection)
 
                     # lights
-                    elif entity_type in GameLight.light_types:
-                        light = GameLight(json_object, entity)
+                    #elif entity_type in GameLight.light_types:
+                        #light = GameLight(json_object, entity)
 
-                        if light.invalid:
-                            utils.verbose_print(f"Info: Skipping instance of {static_mesh.entity_name}. "
-                                                "Invalid property.")
-                            continue
+                        #if light.invalid:
+                            #utils.verbose_print(f"Info: Skipping instance of {static_mesh.entity_name}. "
+                                                #"Invalid property.")
+                            #continue
 
-                        light.import_light(import_collection)
+                        #light.import_light(import_collection)
 
         # TODO: required due to unknown reason, blender bug? Otherwise, some meshes have None materials.
         bpy.app.timers.register(self._library_reload, first_interval=0.010)
