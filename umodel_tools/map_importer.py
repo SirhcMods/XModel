@@ -667,6 +667,6 @@ class MapImporter(asset_importer.AssetImporter):
                         #light.import_light(import_collection)
 
         # TODO: required due to unknown reason, blender bug? Otherwise, some meshes have None materials.
-        bpy.app.timers.register(self._library_reload, first_interval=0.010)
+        #bpy.app.timers.register(self._library_reload, first_interval=0.010)
 
         return True
