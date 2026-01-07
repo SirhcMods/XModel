@@ -271,10 +271,20 @@ class UMODELTOOLS_OT_import_unreal_map(map_importer.MapImporter, bpy.types.Opera
             return self._op_message('ERROR', f"Path to asset dir {asset_dir} does not exist.")
 
         db = asset_db.AssetDB(asset_dir)
+        
+        total_files = len(self.files)
 
-        for file in self.files:
-            self._import_map(context=context, umodel_export_dir=umodel_export_dir, asset_dir=asset_dir, db=db,
-                             map_path=os.path.join(self.directory, file.name), game_profile=profile.game)
+        for i, file in enumerate(self.files, start=1):
+            self._import_map(
+            context=context, 
+            umodel_export_dir=umodel_export_dir, 
+            asset_dir=asset_dir, 
+            db=db,
+            map_path=os.path.join(self.directory, file.name),
+            game_profile=profile.game,
+            map_index=i,
+            map_total=total_files
+        )
 
         db.save_db()
 

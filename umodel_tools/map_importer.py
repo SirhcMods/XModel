@@ -596,7 +596,10 @@ class MapImporter(asset_importer.AssetImporter):
                     umodel_export_dir: str,
                     asset_dir: str,
                     game_profile: str,
-                    db: t.Optional[asset_db.AssetDB] = None) -> bool:
+                    db: t.Optional[asset_db.AssetDB] = None,
+                    map_index: int = 1,       # new: which map number we are importing
+                    map_total: int = 1        # new: total number of maps
+    ) -> bool:
         """Imports map placements to the current scene.
 
         :param map_path: Path to FModel .json output representing a .umap file.
@@ -621,8 +624,10 @@ class MapImporter(asset_importer.AssetImporter):
 
             # handle the different entity types (mehses, lights, etc)
             with utils.std_out_err_redirect_tqdm() as orig_stdout:
+                map_name = os.path.splitext(os.path.basename(map_path))[0]
+                tqdm_desc = f"[{map_index}/{map_total}] Importing map \"{map_name}\""
                 for entity in tqdm.tqdm(json_object,
-                                        desc=f"Importing map \"{os.path.splitext(os.path.basename(map_path))[0]}\"",
+                                        desc=tqdm_desc,
                                         file=orig_stdout,
                                         dynamic_ncols=True,
                                         ascii=True):
