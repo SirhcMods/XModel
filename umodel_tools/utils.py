@@ -95,33 +95,21 @@ def std_out_err_redirect_tqdm():
     # Always restore sys.stdout/err if necessary
     finally:
         sys.stdout, sys.stderr = orig_out_err
-
-
+   
 @contextlib.contextmanager
 def redirect_cstdout(to=os.devnull):
-    """Redirect stdout from C/C++ parts of Blender and external libaries.
-    We use this to suppress library reading and linking messages.
-
-    :param to: _description_, defaults to os.devnull
-    :yield: _description_
-    """
-
-    # disable the whole redirect in debug mode
     if preferences.get_addon_preferences().debug:
         yield
-        return None
+        return
 
     fd = sys.stdout.fileno()
+    saved_fd = os.dup(fd)
 
-    def _redirect_stdout(to):
-        os.dup2(to.fileno(), fd)  # fd writes to 'to' file
+    try:
+        with open(to, 'w') as target:
+            os.dup2(target.fileno(), fd)
+            yield
+    finally:
+        os.dup2(saved_fd, fd)
+        os.close(saved_fd)
 
-    with os.fdopen(os.dup(fd), 'w') as old_stdout:
-        with open(to, 'w') as file:  # pylint: disable=unspecified-encoding
-            _redirect_stdout(to=file)
-        try:
-            yield  # allow code to be run with the redirected stdout
-        finally:
-            _redirect_stdout(to=old_stdout)  # restore stdout
-
-    return None
