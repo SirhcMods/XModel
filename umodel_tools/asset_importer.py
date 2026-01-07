@@ -126,7 +126,7 @@ class AssetImporter:
             return None
 
         except (RuntimeError, FileNotFoundError):
-            traceback.print_exc()
+            #traceback.print_exc()
             return None
 
     def _import_image_to_library(self,
@@ -394,7 +394,7 @@ class AssetImporter:
             animated = True
 
         else:
-            raise FileNotFoundError(f"Error: Failed importing asset: {asset_psk_path_noext} was not found "
+            raise FileNotFoundError(f"Failed importing asset: {asset_psk_path_noext} was not found "
                                     "(.psk/.pskx).")
 
         obj = context.object
