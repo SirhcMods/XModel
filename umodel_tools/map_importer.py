@@ -11,6 +11,7 @@ import tqdm
 from . import asset_db
 from . import asset_importer
 from . import utils
+from .utils import static_mesh_has_instance_in_bounds
 
 
 def split_object_path(object_path):
@@ -36,6 +37,16 @@ def parse_ue_object_name(obj_name: str) -> tuple[str, str, str]:
 
     return obj_type, names[-2], names[-1]
 
+def is_within_import_bounds(pos):
+    scene = bpy.context.scene
+    if not scene.umodel_use_vertex_bounds:
+        return True
+
+    return (
+        scene.umodel_min_x <= pos.x <= scene.umodel_max_x and
+        scene.umodel_min_y <= pos.y <= scene.umodel_max_y and
+        scene.umodel_min_z <= pos.z <= scene.umodel_max_z
+    )
 
 class InstanceTransform:
     pos: tuple[float, float, float]
@@ -643,6 +654,8 @@ class MapImporter(asset_importer.AssetImporter):
                         if static_mesh.invalid:
                             utils.verbose_print(f"Info: Skipping instance of {static_mesh.entity_name}. "
                                                 "Invalid property.")
+                            continue
+                        if not static_mesh_has_instance_in_bounds(static_mesh):
                             continue
 
                         if (obj := self._load_asset(

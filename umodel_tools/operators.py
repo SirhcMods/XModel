@@ -15,6 +15,8 @@ from . import asset_db
 from . import map_importer
 from . import preferences
 
+from .utils import get_selected_vertex_world_bounds
+
 
 def _get_object_aabb_verts(obj: bpy.types.Object) -> list[tuple[float, float, float]]:
     return [obj.matrix_world @ mu.Vector(corner) for corner in obj.bound_box]
@@ -360,6 +362,27 @@ class UMODELTOOLS_OT_realign_asset(bpy.types.Operator):
         bpy.data.objects.remove(asset_obj_copy, do_unlink=True)
         bpy.data.objects.remove(target_obj_copy, do_unlink=True)
 
+        return {'FINISHED'}
+
+class UMODEL_OT_calculate_import_bounds(bpy.types.Operator):
+    bl_idname = "umodel.calculate_import_bounds"
+    bl_label = "Calculate Import Bounds"
+    bl_description = "Calculate world-space bounds from selected vertices"
+
+    def execute(self, context):
+        bounds = get_selected_vertex_world_bounds()
+
+        if not bounds:
+            self.report({'ERROR'}, "Select mesh vertices first")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        scene.umodel_min_x = bounds["min_x"]
+        scene.umodel_max_x = bounds["max_x"]
+        scene.umodel_min_y = bounds["min_y"]
+        scene.umodel_max_y = bounds["max_y"]
+
+        self.report({'INFO'}, "Import bounds calculated from selection")
         return {'FINISHED'}
 
 

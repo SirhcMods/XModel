@@ -51,6 +51,7 @@ def register():
 
     try:
         auto_load.register()
+        register_bounds_props()		
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
@@ -58,8 +59,27 @@ def register():
 def unregister():
     try:
         auto_load.unregister()
+        unregister_bounds_props()
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
+
+def register_bounds_props():
+    bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
+        name="Calculate From Vertex Range",
+        description="Only import actors within the calculated vertex bounds",
+        default=False
+    )
+    bpy.types.Scene.umodel_min_x = bpy.props.FloatProperty(name="Min X")
+    bpy.types.Scene.umodel_max_x = bpy.props.FloatProperty(name="Max X")
+    bpy.types.Scene.umodel_min_y = bpy.props.FloatProperty(name="Min Y")
+    bpy.types.Scene.umodel_max_y = bpy.props.FloatProperty(name="Max Y")
+
+def unregister_bounds_props():
+    del bpy.types.Scene.umodel_use_vertex_bounds
+    del bpy.types.Scene.umodel_min_x
+    del bpy.types.Scene.umodel_max_x
+    del bpy.types.Scene.umodel_min_y
+    del bpy.types.Scene.umodel_max_y
 
 
 __all__ = (

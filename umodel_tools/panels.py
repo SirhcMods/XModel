@@ -37,6 +37,31 @@ class UMODELTOOLS_PG_asset(bpy.types.PropertyGroup):
         description="Path of the asset in the Unreal engine game"
     )
 
+class UMODEL_PT_import_bounds(bpy.types.Panel):
+    bl_label = "UMAP Import Bounds"
+    bl_idname = "UMODEL_PT_import_bounds"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'UModel'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        layout.prop(scene, "umodel_use_vertex_bounds")
+
+        layout.operator(
+            "umodel.calculate_import_bounds",
+            icon='MESH_CUBE'
+        )
+
+        col = layout.column(align=True)
+        col.enabled = scene.umodel_use_vertex_bounds
+
+        col.prop(scene, "umodel_min_x")
+        col.prop(scene, "umodel_max_x")
+        col.prop(scene, "umodel_min_y")
+        col.prop(scene, "umodel_max_y")
 
 def topbar_menu_func(menu: bpy.types.Menu, context: bpy.types.Context):
     if context.region.alignment != 'RIGHT':

@@ -7,6 +7,7 @@ import contextlib
 import bpy
 import tqdm
 
+from mathutils import Vector
 from . import preferences
 
 
@@ -112,4 +113,64 @@ def redirect_cstdout(to=os.devnull):
     finally:
         os.dup2(saved_fd, fd)
         os.close(saved_fd)
+
+def get_selected_vertex_world_bounds():
+    obj = bpy.context.object
+
+    if not obj or obj.type != 'MESH':
+        return None
+
+    mesh = obj.data
+    mat = obj.matrix_world
+
+    xs, ys, zs = [], [], []
+
+    for v in mesh.vertices:
+        if v.select:
+            wp = mat @ v.co
+            xs.append(wp.x)
+            ys.append(wp.y)
+            zs.append(wp.z)
+
+    if not xs:
+        return None
+
+    return {
+        "min_x": min(xs),
+        "max_x": max(xs),
+        "min_y": min(ys),
+        "max_y": max(ys),
+        "min_z": min(zs),
+        "max_z": max(zs),
+    }
+
+from mathutils import Vector
+
+def static_mesh_has_instance_in_bounds(static_mesh) -> bool:
+    from .map_importer import is_within_import_bounds
+
+    trs = static_mesh.transform
+
+    # ---------- Non-instanced ----------
+    if not static_mesh.is_instanced:
+        if static_mesh.parent_mtx is None:
+            pos = Vector(trs.pos)
+        else:
+            pos = (static_mesh.parent_mtx @ trs.matrix_4x4).to_translation()
+
+        return is_within_import_bounds(pos)
+
+    # ---------- Instanced ----------
+    for inst_trs in static_mesh.instance_transforms:
+        mat = trs.matrix_4x4 @ inst_trs.matrix_4x4
+
+        if static_mesh.parent_mtx is not None:
+            mat = static_mesh.parent_mtx @ mat
+
+        pos = mat.to_translation()
+
+        if is_within_import_bounds(pos):
+            return True
+
+    return False
 
