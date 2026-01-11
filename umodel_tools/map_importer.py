@@ -635,7 +635,7 @@ class MapImporter(asset_importer.AssetImporter):
             # handle the different entity types (mehses, lights, etc)
             with utils.std_out_err_redirect_tqdm() as orig_stdout:
                 map_name = os.path.splitext(os.path.basename(map_path))[0]
-                tqdm_desc = f"[{map_index}/{map_total}] Importing map \"{map_name}\""
+                tqdm_desc = f"[{map_index}/{map_total} B:{scene.umodel_use_vertex_bounds}] Importing map \"{map_name}\""
                 for entity in tqdm.tqdm(json_object,
                                         desc=tqdm_desc,
                                         file=orig_stdout,

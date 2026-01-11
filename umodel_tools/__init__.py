@@ -34,8 +34,8 @@ from . import auto_load  # nopep8 pylint: disable=wrong-import-position
 
 #: Addon description for Blender. Displayed in settings.
 bl_info = {
-    "name": "UModel Tools",
-    "author": "Skarn",
+    "name": "XModel",
+    "author": "Skarn, iSrirachaa",
     "version": (1, 0),
     "blender": (3, 40, 0),
     "description": "Import Unreal Engine games scenes and assets into Blender.",
@@ -66,7 +66,7 @@ def unregister():
 
 def register_bounds_props(umap_result_pg_type):
     bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
-        name="Calculate From Vertex Range",
+        name="Import Within Map Bounds",
         description="Only import actors within the calculated vertex bounds",
         default=False
     )

@@ -430,53 +430,57 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
 
         matches = 0
 
-        for idx, json_path in enumerate(json_files, start=1):
-            percent = (idx / total) * 100.0
+        try:
+            scene.umodel_use_vertex_bounds = True
+            for idx, json_path in enumerate(json_files, start=1):
+                percent = (idx / total) * 100.0
 
-            # Console logging (cheap, safe)
-            print(f"[UMAP SCAN] {idx}/{total} ({percent:.1f}%) - {os.path.basename(json_path)}")
+                # Console logging (cheap, safe)
+                print(f"[UMAP SCAN] {idx}/{total} ({percent:.1f}%) - {os.path.basename(json_path)}")
 
-            # Occasional status bar update (don’t spam)
-            if idx == 1 or idx % 10 == 0 or idx == total:
-                self.report({'INFO'}, f"Scanning UMAPs: {idx}/{total} ({percent:.1f}%)")
+                # Occasional status bar update (don’t spam)
+                if idx == 1 or idx % 10 == 0 or idx == total:
+                    self.report({'INFO'}, f"Scanning UMAPs: {idx}/{total} ({percent:.1f}%) B:{scene.umodel_use_vertex_bounds}")
 
-            context.window_manager.progress_update(idx)
-
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    json_obj = json.load(f)
-            except Exception:
-                continue
-
-            if not isinstance(json_obj, list):
-                continue
-
-            # If any StaticMesh/ISM/HISM instance is in bounds, record the map once.
-            for entity in json_obj:
-                entity_type = entity.get("Type")
-                if entity_type not in StaticMesh.static_mesh_types:
-                    continue
+                context.window_manager.progress_update(idx)
 
                 try:
-                    static_mesh = StaticMesh(json_obj, entity, entity_type)
-                    if static_mesh.invalid:
-                        continue
-
-                    # Reuse your existing bounds logic
-                    if utils.static_mesh_has_instance_in_bounds(static_mesh):
-                        item = scene.umodel_umap_scan_results.add()
-                        item.map_name = os.path.splitext(os.path.basename(json_path))[0]
-                        item.map_path = json_path
-                        matches += 1
-                        break
-
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        json_obj = json.load(f)
                 except Exception:
-                    # Never let a single bad entity kill the scan
                     continue
 
-        context.window_manager.progress_end()
+                if not isinstance(json_obj, list):
+                    continue
 
-        self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps intersect bounds")
+                # If any StaticMesh/ISM/HISM instance is in bounds, record the map once.
+                for entity in json_obj:
+                    entity_type = entity.get("Type")
+                    if entity_type not in StaticMesh.static_mesh_types:
+                         continue
+
+                    try:
+                        static_mesh = StaticMesh(json_obj, entity, entity_type)
+                        if static_mesh.invalid:
+                            continue
+
+                        # Reuse your existing bounds logic
+                        if utils.static_mesh_has_instance_in_bounds(static_mesh):
+                            item = scene.umodel_umap_scan_results.add()
+                            item.map_name = os.path.splitext(os.path.basename(json_path))[0]
+                            item.map_path = json_path
+                            matches += 1
+                            break
+
+                    except Exception:
+                        # Never let a single bad entity kill the scan
+                        continue
+
+            context.window_manager.progress_end()
+        finally:
+            scene.umodel_use_vertex_bounds = False
+
+        self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
         return {'FINISHED'}
 
 
@@ -490,23 +494,6 @@ class UMODEL_OT_clear_umap_scan_results(bpy.types.Operator):
         scene = context.scene
         scene.umodel_umap_scan_results.clear()
         scene.umodel_umap_scan_index = 0
-        return {'FINISHED'}
-
-
-class UMODEL_OT_copy_umap_scan_results(bpy.types.Operator):
-    bl_idname = "umodel.copy_umap_scan_results"
-    bl_label = "Copy UMAP Scan Results"
-    bl_description = "Copy the found map paths to clipboard"
-
-    def execute(self, context):
-        scene = context.scene
-        if not scene.umodel_umap_scan_results:
-            self.report({'WARNING'}, "No results to copy")
-            return {'CANCELLED'}
-
-        text = "\n".join(item.map_path for item in scene.umodel_umap_scan_results)
-        context.window_manager.clipboard = text
-        self.report({'INFO'}, "Copied map list to clipboard")
         return {'FINISHED'}
 
 class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):
@@ -556,16 +543,20 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
         db = asset_db.AssetDB(asset_dir)
 
         # Import exactly one map using the same internal importer your menu operator uses
-        ok = self._import_map(
-            context=context,
-            map_path=map_path,
-            umodel_export_dir=umodel_export_dir,
-            asset_dir=asset_dir,
-            game_profile=profile.game,
-            db=db,
-            map_index=1,
-            map_total=1
-        )
+        try:
+            scene.umodel_use_vertex_bounds = True
+            ok = self._import_map(
+                context=context,
+                map_path=map_path,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=profile.game,
+                db=db,
+                map_index=1,
+                map_total=1
+            )
+        finally:
+            scene.umodel_use_vertex_bounds = False
 
         db.save_db()
 
@@ -575,7 +566,6 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
             self._op_message('WARNING', "Map import had warnings. Check console for details.")
 
         return {'FINISHED'} if ok else {'CANCELLED'}
-
 
 class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Operator):
     bl_idname = "umodel.import_scanned_umap_all"
@@ -615,34 +605,39 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
         context.window_manager.progress_begin(0, total)
 
-        imported = 0
-        for i, item in enumerate(scene.umodel_umap_scan_results, start=1):
-            map_path = item.map_path
-            percent = (i / total) * 100.0
+        try:
+            scene.umodel_use_vertex_bounds = True
+            imported = 0
+            for i, item in enumerate(scene.umodel_umap_scan_results, start=1):
+                map_path = item.map_path
+                percent = (i / total) * 100.0
 
-            print(f"[UMAP IMPORT] {i}/{total} ({percent:.1f}%) - {os.path.basename(map_path)}")
-            if i == 1 or i % 5 == 0 or i == total:
-                self.report({'INFO'}, f"Importing scanned UMAPs: {i}/{total} ({percent:.1f}%)")
+                print(f"[UMAP IMPORT] {i}/{total} ({percent:.1f}%) - {os.path.basename(map_path)}")
+                if i == 1 or i % 5 == 0 or i == total:
+                    self.report({'INFO'}, f"Importing scanned UMAPs: {i}/{total} ({percent:.1f}%) B:{scene.umodel_use_vertex_bounds}")
 
-            context.window_manager.progress_update(i)
+                context.window_manager.progress_update(i)
 
-            if not os.path.isfile(map_path):
-                continue
+                if not os.path.isfile(map_path):
+                    continue
 
-            ok = self._import_map(
-                context=context,
-                map_path=map_path,
-                umodel_export_dir=umodel_export_dir,
-                asset_dir=asset_dir,
-                game_profile=profile.game,
-                db=db,
-                map_index=i,
-                map_total=total
-            )
-            if ok:
-                imported += 1
+                ok = self._import_map(
+                    context=context,
+                    map_path=map_path,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    db=db,
+                    map_index=1,
+                    map_total=1
+                )
+			
+                if ok:
+                    imported += 1
 
-        context.window_manager.progress_end()
+            context.window_manager.progress_end()
+        finally:
+            scene.umodel_use_vertex_bounds = False
 
         db.save_db()
 

@@ -7,7 +7,7 @@ class UMODELTOOLS_PT_asset(bpy.types.Panel):
     bl_region_type = 'WINDOW'
     bl_space_type = 'PROPERTIES'
     bl_context = "object"
-    bl_label = "UModel Tools Asset"
+    bl_label = "=XModel Asset"
 
     @classmethod
     def poll(cls, context: bpy.types.Context):
@@ -42,13 +42,11 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
     bl_idname = "UMODEL_PT_import_bounds"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'UModel'
+    bl_category = 'XModel'
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-
-        layout.prop(scene, "umodel_use_vertex_bounds")
 
         layout.operator(
             "umodel.calculate_import_bounds",
@@ -56,7 +54,6 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         )
 
         col = layout.column(align=True)
-        col.enabled = scene.umodel_use_vertex_bounds
 
         col.prop(scene, "umodel_min_x")
         col.prop(scene, "umodel_max_x")
@@ -64,7 +61,7 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         col.prop(scene, "umodel_max_y")
 		
         box = layout.box()
-        box.label(text="Maps Intersecting Bounds")
+        box.label(text="Path to UMAPS")
 
         row = box.row(align=True)
         row.prop(scene, "umodel_umap_scan_dir", text="")
@@ -82,7 +79,6 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
 
         row = box.row(align=True)
         row.operator("umodel.clear_umap_scan_results", text="Clear", icon='X')
-        row.operator("umodel.copy_umap_scan_results", text="Copy List", icon='COPYDOWN')
         row = box.row(align=True)
         row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
         row.operator("umodel.import_scanned_umap_all", text="Import All")
