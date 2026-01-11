@@ -44,8 +44,7 @@ def is_within_import_bounds(pos):
 
     return (
         scene.umodel_min_x <= pos.x <= scene.umodel_max_x and
-        scene.umodel_min_y <= pos.y <= scene.umodel_max_y and
-        scene.umodel_min_z <= pos.z <= scene.umodel_max_z
+        scene.umodel_min_y <= pos.y <= scene.umodel_max_y
     )
 
 class InstanceTransform:

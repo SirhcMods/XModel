@@ -7,6 +7,7 @@ import tqdm
 import tqdm.contrib
 import bpy
 import bpy_extras.io_utils
+import json
 import mathutils as mu
 
 from . import utils
@@ -385,6 +386,273 @@ class UMODEL_OT_calculate_import_bounds(bpy.types.Operator):
         self.report({'INFO'}, "Import bounds calculated from selection")
         return {'FINISHED'}
 
+class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
+    bl_idname = "umodel.scan_umap_bounds"
+    bl_label = "Scan UMAPs for Bounds"
+    bl_description = "Scan a directory for exported .umap .json files and list maps that intersect the current import bounds"
+
+    def execute(self, context):
+        scene = context.scene
+
+        if not hasattr(scene, "umodel_umap_scan_results"):
+            self.report({'ERROR'}, "UMAP scan results property not registered. Re-enable addon or restart Blender.")
+            return {'CANCELLED'}
+
+        scan_dir = bpy.path.abspath(scene.umodel_umap_scan_dir) if scene.umodel_umap_scan_dir else ""
+        if not scan_dir:
+            self.report({'ERROR'}, "Set a UMAP JSON Directory first")
+            return {'CANCELLED'}
+
+        if not os.path.isdir(scan_dir):
+            self.report({'ERROR'}, f"Directory not found: {scan_dir}")
+            return {'CANCELLED'}
+
+        # Clear existing results
+        scene.umodel_umap_scan_results.clear()
+        scene.umodel_umap_scan_index = 0
+
+        # Lazy import to avoid circular import issues / heavy import cost
+        from .map_importer import StaticMesh  # pylint: disable=import-outside-toplevel
+
+        # Pre-count json files for progress reporting
+        json_files = []
+        for root, _dirs, files in os.walk(scan_dir):
+            for filename in files:
+                if filename.lower().endswith(".json"):
+                    json_files.append(os.path.join(root, filename))
+
+        total = len(json_files)
+        if total == 0:
+            self.report({'WARNING'}, "No .json files found in directory")
+            return {'CANCELLED'}
+
+        context.window_manager.progress_begin(0, total)
+
+        matches = 0
+
+        for idx, json_path in enumerate(json_files, start=1):
+            percent = (idx / total) * 100.0
+
+            # Console logging (cheap, safe)
+            print(f"[UMAP SCAN] {idx}/{total} ({percent:.1f}%) - {os.path.basename(json_path)}")
+
+            # Occasional status bar update (don’t spam)
+            if idx == 1 or idx % 10 == 0 or idx == total:
+                self.report({'INFO'}, f"Scanning UMAPs: {idx}/{total} ({percent:.1f}%)")
+
+            context.window_manager.progress_update(idx)
+
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    json_obj = json.load(f)
+            except Exception:
+                continue
+
+            if not isinstance(json_obj, list):
+                continue
+
+            # If any StaticMesh/ISM/HISM instance is in bounds, record the map once.
+            for entity in json_obj:
+                entity_type = entity.get("Type")
+                if entity_type not in StaticMesh.static_mesh_types:
+                    continue
+
+                try:
+                    static_mesh = StaticMesh(json_obj, entity, entity_type)
+                    if static_mesh.invalid:
+                        continue
+
+                    # Reuse your existing bounds logic
+                    if utils.static_mesh_has_instance_in_bounds(static_mesh):
+                        item = scene.umodel_umap_scan_results.add()
+                        item.map_name = os.path.splitext(os.path.basename(json_path))[0]
+                        item.map_path = json_path
+                        matches += 1
+                        break
+
+                except Exception:
+                    # Never let a single bad entity kill the scan
+                    continue
+
+        context.window_manager.progress_end()
+
+        self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps intersect bounds")
+        return {'FINISHED'}
+
+
+
+class UMODEL_OT_clear_umap_scan_results(bpy.types.Operator):
+    bl_idname = "umodel.clear_umap_scan_results"
+    bl_label = "Clear UMAP Scan Results"
+    bl_description = "Clear the UMAP scan results list"
+
+    def execute(self, context):
+        scene = context.scene
+        scene.umodel_umap_scan_results.clear()
+        scene.umodel_umap_scan_index = 0
+        return {'FINISHED'}
+
+
+class UMODEL_OT_copy_umap_scan_results(bpy.types.Operator):
+    bl_idname = "umodel.copy_umap_scan_results"
+    bl_label = "Copy UMAP Scan Results"
+    bl_description = "Copy the found map paths to clipboard"
+
+    def execute(self, context):
+        scene = context.scene
+        if not scene.umodel_umap_scan_results:
+            self.report({'WARNING'}, "No results to copy")
+            return {'CANCELLED'}
+
+        text = "\n".join(item.map_path for item in scene.umodel_umap_scan_results)
+        context.window_manager.clipboard = text
+        self.report({'INFO'}, "Copied map list to clipboard")
+        return {'FINISHED'}
+
+class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):
+    bl_idname = "umodel.import_scanned_umap_selected"
+    bl_label = "Import Selected Scanned UMAP"
+    bl_description = "Import the selected UMAP from the scan results using the same importer logic"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+
+        if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
+            self.report({'ERROR'}, "No scan results to import.")
+            return {'CANCELLED'}
+
+        idx = int(scene.umodel_umap_scan_index)
+        if idx < 0 or idx >= len(scene.umodel_umap_scan_results):
+            self.report({'ERROR'}, "No scan result selected.")
+            return {'CANCELLED'}
+
+        item = scene.umodel_umap_scan_results[idx]
+        map_path = item.map_path
+
+        profile = preferences.get_addon_preferences().get_active_profile()
+        if profile is None:
+            return self._op_message('ERROR', "You need to have an active game profile selected.")
+
+        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
+        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        if not umodel_export_dir:
+            return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
+        if not os.path.isdir(umodel_export_dir):
+            return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
+
+        asset_dir: str = os.path.normpath(profile.asset_dir)
+        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        if not asset_dir:
+            return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
+        if not os.path.isdir(asset_dir):
+            return self._op_message('ERROR', f"Path to asset dir {asset_dir} does not exist.")
+
+        if not os.path.isfile(map_path):
+            return self._op_message('ERROR', f"Map file not found: {map_path}")
+
+        self._unrecognized_texture_types.clear()
+
+        db = asset_db.AssetDB(asset_dir)
+
+        # Import exactly one map using the same internal importer your menu operator uses
+        ok = self._import_map(
+            context=context,
+            map_path=map_path,
+            umodel_export_dir=umodel_export_dir,
+            asset_dir=asset_dir,
+            game_profile=profile.game,
+            db=db,
+            map_index=1,
+            map_total=1
+        )
+
+        db.save_db()
+
+        self._print_unrecognized_textures()
+
+        if self._has_warnings:
+            self._op_message('WARNING', "Map import had warnings. Check console for details.")
+
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Operator):
+    bl_idname = "umodel.import_scanned_umap_all"
+    bl_label = "Import All Scanned UMAPs"
+    bl_description = "Import all UMAPs from scan results using the same importer logic"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+
+        if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
+            self.report({'ERROR'}, "No scan results to import.")
+            return {'CANCELLED'}
+
+        profile = preferences.get_addon_preferences().get_active_profile()
+        if profile is None:
+            return self._op_message('ERROR', "You need to have an active game profile selected.")
+
+        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
+        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        if not umodel_export_dir:
+            return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
+        if not os.path.isdir(umodel_export_dir):
+            return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
+
+        asset_dir: str = os.path.normpath(profile.asset_dir)
+        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        if not asset_dir:
+            return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
+        if not os.path.isdir(asset_dir):
+            return self._op_message('ERROR', f"Path to asset dir {asset_dir} does not exist.")
+
+        self._unrecognized_texture_types.clear()
+
+        total = len(scene.umodel_umap_scan_results)
+        db = asset_db.AssetDB(asset_dir)
+
+        context.window_manager.progress_begin(0, total)
+
+        imported = 0
+        for i, item in enumerate(scene.umodel_umap_scan_results, start=1):
+            map_path = item.map_path
+            percent = (i / total) * 100.0
+
+            print(f"[UMAP IMPORT] {i}/{total} ({percent:.1f}%) - {os.path.basename(map_path)}")
+            if i == 1 or i % 5 == 0 or i == total:
+                self.report({'INFO'}, f"Importing scanned UMAPs: {i}/{total} ({percent:.1f}%)")
+
+            context.window_manager.progress_update(i)
+
+            if not os.path.isfile(map_path):
+                continue
+
+            ok = self._import_map(
+                context=context,
+                map_path=map_path,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=profile.game,
+                db=db,
+                map_index=i,
+                map_total=total
+            )
+            if ok:
+                imported += 1
+
+        context.window_manager.progress_end()
+
+        db.save_db()
+
+        self._print_unrecognized_textures()
+
+        if self._has_warnings:
+            self._op_message('WARNING', "Map import had warnings. Check console for details.")
+
+        self.report({'INFO'}, f"Imported {imported}/{total} scanned maps.")
+        return {'FINISHED'}
 
 def menu_func_object(menu: bpy.types.Menu, _: bpy.types.Context) -> None:
     menu.layout.operator(UMODELTOOLS_OT_recover_unreal_asset.bl_idname)

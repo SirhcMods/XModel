@@ -62,6 +62,41 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         col.prop(scene, "umodel_max_x")
         col.prop(scene, "umodel_min_y")
         col.prop(scene, "umodel_max_y")
+		
+        box = layout.box()
+        box.label(text="Maps Intersecting Bounds")
+
+        row = box.row(align=True)
+        row.prop(scene, "umodel_umap_scan_dir", text="")
+        row.operator("umodel.scan_umap_bounds", text="Scan", icon='VIEWZOOM')
+
+        box.template_list(
+            "UMODELTOOLS_UL_umap_scan_results",
+            "",
+            scene,
+            "umodel_umap_scan_results",
+            scene,
+            "umodel_umap_scan_index",
+            rows=6
+        )
+
+        row = box.row(align=True)
+        row.operator("umodel.clear_umap_scan_results", text="Clear", icon='X')
+        row.operator("umodel.copy_umap_scan_results", text="Copy List", icon='COPYDOWN')
+        row = box.row(align=True)
+        row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
+        row.operator("umodel.import_scanned_umap_all", text="Import All")
+
+class UMODELTOOLS_PG_umap_scan_result(bpy.types.PropertyGroup):
+    map_name: bpy.props.StringProperty(name="Map")
+    map_path: bpy.props.StringProperty(name="Path")
+
+class UMODELTOOLS_UL_umap_scan_results(bpy.types.UIList):
+    bl_idname = "UMODELTOOLS_UL_umap_scan_results"
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
+        # item is UMODELTOOLS_PG_umap_scan_result
+        layout.label(text=item.map_name)
 
 def topbar_menu_func(menu: bpy.types.Menu, context: bpy.types.Context):
     if context.region.alignment != 'RIGHT':

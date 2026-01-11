@@ -51,19 +51,20 @@ def register():
 
     try:
         auto_load.register()
-        register_bounds_props()		
+        from .panels import UMODELTOOLS_PG_umap_scan_result
+        register_bounds_props(UMODELTOOLS_PG_umap_scan_result)		
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
 
 def unregister():
     try:
-        auto_load.unregister()
         unregister_bounds_props()
+        auto_load.unregister()
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
-def register_bounds_props():
+def register_bounds_props(umap_result_pg_type):
     bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
         name="Calculate From Vertex Range",
         description="Only import actors within the calculated vertex bounds",
@@ -73,6 +74,17 @@ def register_bounds_props():
     bpy.types.Scene.umodel_max_x = bpy.props.FloatProperty(name="Max X")
     bpy.types.Scene.umodel_min_y = bpy.props.FloatProperty(name="Min Y")
     bpy.types.Scene.umodel_max_y = bpy.props.FloatProperty(name="Max Y")
+	
+    bpy.types.Scene.umodel_umap_scan_dir = bpy.props.StringProperty(
+        name="UMAP JSON Directory",
+        description="Folder containing exported .umap .json files (scanned recursively)",
+        subtype='DIR_PATH',
+        default=""
+    )
+    bpy.types.Scene.umodel_umap_scan_results = bpy.props.CollectionProperty(
+        type=umap_result_pg_type
+    )
+    bpy.types.Scene.umodel_umap_scan_index = bpy.props.IntProperty(default=0)
 
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
@@ -80,6 +92,10 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_max_x
     del bpy.types.Scene.umodel_min_y
     del bpy.types.Scene.umodel_max_y
+
+    del bpy.types.Scene.umodel_umap_scan_dir
+    del bpy.types.Scene.umodel_umap_scan_results
+    del bpy.types.Scene.umodel_umap_scan_index
 
 
 __all__ = (
