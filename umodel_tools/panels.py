@@ -37,12 +37,65 @@ class UMODELTOOLS_PG_asset(bpy.types.PropertyGroup):
         description="Path of the asset in the Unreal engine game"
     )
 
+class UMODEL_PT_profile_settings(bpy.types.Panel):
+    bl_label = "Import UMAP"
+    bl_idname = "UMODEL_PT_profile_settings"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 0
+
+    def draw(self, context):
+        layout = self.layout
+        prefs = get_addon_preferences()
+
+        layout.label(text="Game profiles:")
+
+        row = layout.row()
+        row.template_list(
+            "UMODELTOOLS_UL_game_profiles",
+            "",
+            prefs,
+            "profiles",
+            prefs,
+            "active_profile_index",
+        )
+
+        col = row.column(align=True)
+        col.operator("umodel_tools.list_action", icon='ADD', text="").action = 'ADD'
+        col.operator("umodel_tools.list_action", icon='REMOVE', text="").action = 'REMOVE'
+        col.separator()
+        col.operator("umodel_tools.list_action", icon='TRIA_UP', text="").action = 'UP'
+        col.operator("umodel_tools.list_action", icon='TRIA_DOWN', text="").action = 'DOWN'
+
+        profile = prefs.get_active_profile()
+        if profile is None:
+            layout.label(text="No active profile.")
+            return
+
+        layout.separator()
+        layout.label(text="Active profile settings:")
+        layout.prop(profile, "game")
+        layout.prop(profile, "umodel_export_dir")
+        layout.prop(profile, "asset_dir")
+		
+        layout.separator()
+
+        layout.prop(context.scene, "umodel_import_materials")
+        layout.separator()
+
+        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator("umodel_tools.import_unreal_map", text="Import Unreal Map", icon='IMPORT')
+
+
 class UMODEL_PT_import_bounds(bpy.types.Panel):
-    bl_label = "UMAP Import Bounds"
+    bl_label = "Import UMAP with Bounds"
     bl_idname = "UMODEL_PT_import_bounds"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'XModel'
+    bl_order = 1
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout

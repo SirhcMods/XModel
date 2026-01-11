@@ -86,6 +86,12 @@ def register_bounds_props(umap_result_pg_type):
     )
     bpy.types.Scene.umodel_umap_scan_index = bpy.props.IntProperty(default=0)
 
+    bpy.types.Scene.umodel_import_materials = bpy.props.BoolProperty(
+        name="Import Materials",
+        description="If disabled, skip material processing to speed up imports",
+        default=True
+    )
+
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
     del bpy.types.Scene.umodel_min_x
@@ -96,6 +102,8 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_umap_scan_dir
     del bpy.types.Scene.umodel_umap_scan_results
     del bpy.types.Scene.umodel_umap_scan_index
+
+    del bpy.types.Scene.umodel_import_materials
 
 
 __all__ = (

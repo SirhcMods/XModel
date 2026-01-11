@@ -126,14 +126,14 @@ class AssetImporter:
             return None
 
         except (RuntimeError, FileNotFoundError):
-            #traceback.print_exc()
+            # traceback.print_exc()
             return None
 
     def _import_image_to_library(self,
-                                 tex_path: str,
-                                 tex_lib_path: str,
-                                 tex_umodel_path: str,
-                                 db: asset_db.AssetDB):
+                                tex_path: str,
+                                tex_lib_path: str,
+                                tex_umodel_path: str,
+                                db: asset_db.AssetDB):
         """Import image texture to asset library from UModel output.
 
         :param tex_path: Path to texture in game format.````
@@ -158,13 +158,13 @@ class AssetImporter:
         bpy.data.images.remove(img, do_unlink=True)
 
     def _import_material_to_library(self,
-                                    material_name: str,
-                                    material_path_local: str,
-                                    db: asset_db.AssetDB,
-                                    umodel_export_dir: str,
-                                    asset_library_dir: str,
-                                    game_profile: str
-                                    ) -> None:
+                                   material_name: str,
+                                   material_path_local: str,
+                                   db: asset_db.AssetDB,
+                                   umodel_export_dir: str,
+                                   asset_library_dir: str,
+                                   game_profile: str
+                                   ) -> None:
         """Import material to asset library from UModel output.
 
         :param material_name: Short name of material.
@@ -185,9 +185,11 @@ class AssetImporter:
 
         # load texture infos, may throw OSError if file is not found.
         # pylint: disable=unpacking-non-sequence
-        desc_ast, texture_infos, base_prop_overrides = props_txt_parser.parse_props_txt(os.path.join(umodel_export_dir,
-                                                                                        material_path_local),
-                                                                                        mode='MATERIAL')
+        desc_ast, texture_infos, base_prop_overrides = props_txt_parser.parse_props_txt(
+            os.path.join(umodel_export_dir, material_path_local),
+            mode='MATERIAL'
+        )
+
         new_mat = bpy.data.materials.new(material_name)
         new_mat.asset_mark()
         new_mat.asset_data.catalog_id = db.uid_for_entry(material_path_local_no_ext)
@@ -336,13 +338,13 @@ class AssetImporter:
         bpy.data.materials.remove(new_mat, do_unlink=True)
 
     def _import_asset_to_library(self,
-                                 context: bpy.types.Context,
-                                 asset_library_dir: str,
-                                 asset_path: str,
-                                 umodel_export_dir: str,
-                                 game_profile: str,
-                                 db: t.Optional[asset_db.AssetDB] = None
-                                 ) -> None:
+                                context: bpy.types.Context,
+                                asset_library_dir: str,
+                                asset_path: str,
+                                umodel_export_dir: str,
+                                game_profile: str,
+                                db: t.Optional[asset_db.AssetDB] = None
+                                ) -> None:
         """Import asset (mesh) to an assset library from UModel output.
 
         :param context: Current Blender context.
@@ -406,115 +408,127 @@ class AssetImporter:
         # handle materials
         new_materials = []
 
-        # - read material descriptor file and identify associated materials
-        try:
-            # pylint: disable=unpacking-non-sequence
-            _, mat_descriptors_paths = props_txt_parser.parse_props_txt(asset_psk_path_noext + '.props.txt',
-                                                                        mode='MESH')
-        except OSError:
-            self._warn_print(f"Warning: Loading material descriptor {asset_psk_path_noext + '.props.txt'} failed. "
-                             "Materials will not be avaialble for the imported object.")
-        else:
-            # attempt to obtain materials manually if descriptor is not available
-            mat_desc_order_map = {mat.name: None for mat in obj.data.materials}
+        if getattr(context.scene, "umodel_import_materials", True):
+            # - read material descriptor file and identify associated materials
+            try:
+                # pylint: disable=unpacking-non-sequence
+                _, mat_descriptors_paths = props_txt_parser.parse_props_txt(
+                    asset_psk_path_noext + '.props.txt',
+                    mode='MESH'
+                )
+            except OSError:
+                self._warn_print(
+                    f"Warning: Loading material descriptor {asset_psk_path_noext + '.props.txt'} failed. "
+                    "Materials will not be avaialble for the imported object."
+                )
+            else:
+                # attempt to obtain materials manually if descriptor is not available
+                mat_desc_order_map = {mat.name: None for mat in obj.data.materials}
 
-            if animated and not mat_descriptors_paths:
-                if os.path.isdir(mat_dir := os.path.join(os.path.dirname(psk_path), 'Materials')):
-                    for root, _, files in os.walk(mat_dir):
-                        for file in files:
-                            if not file.endswith('.props.txt'):
-                                continue
+                if animated and not mat_descriptors_paths:
+                    if os.path.isdir(mat_dir := os.path.join(os.path.dirname(psk_path), 'Materials')):
+                        for root, _, files in os.walk(mat_dir):
+                            for file in files:
+                                if not file.endswith('.props.txt'):
+                                    continue
 
-                            file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
-                            mat_name = os.path.basename(file_abs)
+                                file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
+                                mat_name = os.path.basename(file_abs)
 
-                            if mat_name not in mat_desc_order_map:
-                                self._warn_print(f"Warning: Found extra material {mat_name} in the Materials dir. "
-                                                 "It won't be imported.")
-                                continue
+                                if mat_name not in mat_desc_order_map:
+                                    self._warn_print(
+                                        f"Warning: Found extra material {mat_name} in the Materials dir. "
+                                        "It won't be imported."
+                                    )
+                                    continue
 
-                            mat_desc_order_map[mat_name] = f"{os.path.relpath(file_abs, umodel_export_dir)}.{mat_name}"
+                                mat_desc_order_map[mat_name] = (
+                                    f"{os.path.relpath(file_abs, umodel_export_dir)}.{mat_name}"
+                                )
 
-                    if any(mat_desc is None for mat_desc in mat_desc_order_map.values()):
-                        print(f"Warning: Material count mismatch for asset \"{obj.name}\".")
-                        mesh = obj.data
+                        if any(mat_desc is None for mat_desc in mat_desc_order_map.values()):
+                            print(f"Warning: Material count mismatch for asset \"{obj.name}\".")
+                            mesh = obj.data
 
-                        bpy.data.objects.remove(obj, do_unlink=True)
-                        bpy.data.meshes.remove(mesh, do_unlink=True)
+                            bpy.data.objects.remove(obj, do_unlink=True)
+                            bpy.data.meshes.remove(mesh, do_unlink=True)
 
-                        old_materials = list(mesh.materials)
+                            old_materials = list(mesh.materials)
 
-                        # perform cleanup before raising
-                        for mat in old_materials:
-                            try:
-                                bpy.data.materials.remove(mat, do_unlink=True)
-                            except ReferenceError:  # TODO: figure out why?
-                                pass
+                            # perform cleanup before raising
+                            for mat in old_materials:
+                                try:
+                                    bpy.data.materials.remove(mat, do_unlink=True)
+                                except ReferenceError:  # TODO: figure out why?
+                                    pass
 
-                        raise FileNotFoundError()
+                            raise FileNotFoundError()
 
-                    mat_descriptors_paths = list(mat_desc_order_map.values())
+                        mat_descriptors_paths = list(mat_desc_order_map.values())
 
-            # replace materials
-            old_materials = list(obj.data.materials)
+                # replace materials
+                old_materials = list(obj.data.materials)
 
-            # initialize each material and populate it with data
-            for mat_desc_path in mat_descriptors_paths:
-                material_path_local_no_ext, material_name = os.path.splitext(mat_desc_path)
-                material_name = material_name[1:]  # removing the .
+                # initialize each material and populate it with data
+                for mat_desc_path in mat_descriptors_paths:
+                    material_path_local_no_ext, material_name = os.path.splitext(mat_desc_path)
+                    material_name = material_name[1:]  # removing the .
 
-                # normalize path from config
-                material_path_local_no_ext = os.path.normpath(material_path_local_no_ext)
+                    # normalize path from config
+                    material_path_local_no_ext = os.path.normpath(material_path_local_no_ext)
 
-                # remove leading separator
-                material_path_local_no_ext = material_path_local_no_ext[1:] \
-                    if material_path_local_no_ext.startswith(os.sep) else material_path_local_no_ext
+                    # remove leading separator
+                    material_path_local_no_ext = (
+                        material_path_local_no_ext[1:]
+                        if material_path_local_no_ext.startswith(os.sep)
+                        else material_path_local_no_ext
+                    )
 
-                material_path_local = material_path_local_no_ext + '.props.txt'
-                material_lib_path = os.path.join(asset_library_dir, material_path_local_no_ext) + '.blend'
+                    material_path_local = material_path_local_no_ext + '.props.txt'
+                    material_lib_path = os.path.join(asset_library_dir, material_path_local_no_ext) + '.blend'
 
-                try:
-                    # add material to asset library if does not exist
-                    if not os.path.isfile(material_lib_path):
-                        self._import_material_to_library(material_name=material_name,
-                                                         material_path_local=material_path_local,
-                                                         db=db,
-                                                         umodel_export_dir=umodel_export_dir,
-                                                         asset_library_dir=asset_library_dir,
-                                                         game_profile=game_profile)
+                    try:
+                        # add material to asset library if does not exist
+                        if not os.path.isfile(material_lib_path):
+                            self._import_material_to_library(material_name=material_name,
+                                                            material_path_local=material_path_local,
+                                                            db=db,
+                                                            umodel_export_dir=umodel_export_dir,
+                                                            asset_library_dir=asset_library_dir,
+                                                            game_profile=game_profile)
 
-                    if (new_mat := utils.linked_libraries_search(material_lib_path, bpy.types.Material)) is None:
-                        # load material from the library
-                        with utils.redirect_cstdout():
-                            with bpy.data.libraries.load(filepath=material_lib_path, link=True) as (data_from, data_to):
-                                # we presume there is exactly one material in the library, no validation performed
-                                data_to.materials = [data_from.materials[0]]
+                        if (new_mat := utils.linked_libraries_search(material_lib_path, bpy.types.Material)) is None:
+                            # load material from the library
+                            with utils.redirect_cstdout():
+                                with bpy.data.libraries.load(filepath=material_lib_path, link=True) as (data_from, data_to):
+                                    # we presume there is exactly one material in the library, no validation performed
+                                    data_to.materials = [data_from.materials[0]]
 
-                            new_mat = data_to.materials[0]
+                                new_mat = data_to.materials[0]
 
-                except FileNotFoundError as e:
-                    new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
-                    self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead. "
-                                     f"({e}).")
+                    except FileNotFoundError as e:
+                        new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
+                        self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead. "
+                                         f"({e}).")
 
-                except OSError:
-                    new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
-                    self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead.")
+                    except OSError:
+                        new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
+                        self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead.")
 
-                new_materials.append((new_mat, material_name))
+                    new_materials.append((new_mat, material_name))
 
-            for mat, mat_name in new_materials:
-                if mat_name in obj.data.materials:
-                    obj.data.materials[obj.data.materials.find(mat_name)] = mat
-                else:
-                    obj.data.materials.append(mat)
+                for mat, mat_name in new_materials:
+                    if mat_name in obj.data.materials:
+                        obj.data.materials[obj.data.materials.find(mat_name)] = mat
+                    else:
+                        obj.data.materials.append(mat)
 
-            # remove original materials
-            for mat in old_materials:
-                try:
-                    bpy.data.materials.remove(mat, do_unlink=True)
-                except ReferenceError:  # TODO: figure out why?
-                    pass
+                # remove original materials
+                for mat in old_materials:
+                    try:
+                        bpy.data.materials.remove(mat, do_unlink=True)
+                    except ReferenceError:  # TODO: figure out why?
+                        pass
 
         # obj.asset_generate_preview()
 
