@@ -78,6 +78,7 @@ class UMODEL_PT_profile_settings(bpy.types.Panel):
         layout.prop(profile, "game")
         layout.prop(profile, "umodel_export_dir")
         layout.prop(profile, "asset_dir")
+        layout.prop(context.scene, "umodel_asset_path_filter")
 		
         layout.separator()
 

@@ -92,6 +92,14 @@ def register_bounds_props(umap_result_pg_type):
         default=True
     )
 
+    bpy.types.Scene.umodel_asset_path_filter = bpy.props.StringProperty(
+        name="Import Filter Path",
+        description="Only import meshes whose Unreal asset path starts with this prefix (leave blank for no filter)",
+        subtype='DIR_PATH',
+        default=""
+    )
+
+
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
     del bpy.types.Scene.umodel_min_x
@@ -104,7 +112,7 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_umap_scan_index
 
     del bpy.types.Scene.umodel_import_materials
-
+    del bpy.types.Scene.umodel_asset_path_filter
 
 __all__ = (
     'bl_info',
