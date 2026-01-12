@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import typing as t
 import enum
 import re
@@ -175,6 +176,28 @@ def is_within_import_bounds(pos):
         scene.umodel_min_x <= pos.x <= scene.umodel_max_x and
         scene.umodel_min_y <= pos.y <= scene.umodel_max_y
     )
+
+_RE_OBJNAME_SM = re.compile(r"StaticMesh'([^']+)'", re.IGNORECASE)
+
+def _collect_psk_names_recursive(root_dir: str) -> set[str]:
+    """Collect PSK/PSKX stems recursively (case-insensitive keys)."""
+    names: set[str] = set()
+    for r, _, files in os.walk(root_dir):
+        for fn in files:
+            lfn = fn.lower()
+            if lfn.endswith(".pskx") or lfn.endswith(".psk"):
+                names.add(os.path.splitext(fn)[0].strip().lower())
+    return names
+
+
+def _static_mesh_name_key(static_mesh) -> str:
+    """Return a case-insensitive key to match a StaticMesh against PSK/PSKX filenames."""
+    try:
+        base = os.path.basename(static_mesh.asset_path.replace("\\", "/"))
+        stem = base.split(".", 1)[0]
+        return stem.strip().lower()
+    except Exception:
+        return ""
 
 class InstanceTransform:
     pos: tuple[float, float, float]
@@ -840,6 +863,9 @@ class GameLight:
 
 
 class MapImporter(asset_importer.AssetImporter):
+    _umodel_psk_name_filter_set: t.Optional[set[str]] = None
+    _umodel_psk_name_filter_root: str = ""
+
     """Imports Unreal Engine map (FModel .json output). Assets are imported from UModel output directory.
     """
 
@@ -1433,6 +1459,24 @@ class MapImporter(asset_importer.AssetImporter):
                             utils.verbose_print(f"Info: Skipping instance of {static_mesh.entity_name}. "
                                                 "Invalid property.")
                             continue
+
+                        # Optional filter: only import meshes whose asset path starts with prefix
+                        asset_filter = bpy.context.scene.umodel_asset_path_filter.strip()
+                        if asset_filter:
+                            filt_dir = bpy.path.abspath(asset_filter)
+                            if not os.path.isdir(filt_dir):
+                                # If it's not a folder, skip everything (filter is active but invalid)
+                                continue
+
+                            # Build / refresh cache if folder changed (or cache empty)
+                            if (self._umodel_psk_name_filter_set is None) or (self._umodel_psk_name_filter_root != filt_dir):
+                                self._umodel_psk_name_filter_set = _collect_psk_names_recursive(filt_dir)
+                                self._umodel_psk_name_filter_root = filt_dir
+
+                            key = _static_mesh_name_key(static_mesh)
+                            if not key or key not in self._umodel_psk_name_filter_set:
+                                continue
+
                         if not static_mesh_has_instance_in_bounds(static_mesh):
                             continue
 
