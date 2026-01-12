@@ -651,9 +651,16 @@ class MapImporter(asset_importer.AssetImporter):
             return False
 
         json_filename = os.path.basename(map_path)
-        import_collection = bpy.data.collections.new(json_filename)
 
-        bpy.context.scene.collection.children.link(import_collection)
+        import_collection = None
+        imported_any = False
+
+        def _ensure_import_collection():
+            nonlocal import_collection
+            if import_collection is None:
+                import_collection = bpy.data.collections.new(json_filename)
+                bpy.context.scene.collection.children.link(import_collection)
+            return import_collection
 
         with open(map_path, mode='r', encoding='utf-8') as file:
             json_object = json.load(file)
@@ -714,7 +721,9 @@ class MapImporter(asset_importer.AssetImporter):
                                              "failure.")
                             continue
 
-                        static_mesh.link_object_instance(obj, import_collection)
+                        col = _ensure_import_collection()
+                        static_mesh.link_object_instance(obj, col)
+                        imported_any = True
 
                     # lights
                     #elif entity_type in GameLight.light_types:
