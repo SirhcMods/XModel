@@ -137,6 +137,24 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
         row.operator("umodel.import_scanned_umap_all", text="Import All")
 
+
+class UMODEL_PT_material_builder(bpy.types.Panel):
+    bl_label = "Materials"
+    bl_idname = "UMODEL_PT_material_builder"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 2
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context):
+        layout = self.layout
+        col = layout.column(align=True)
+
+        col.label(text="Mindseye / FModel helper")
+        col.operator_context = 'INVOKE_DEFAULT'
+        col.operator("umodel_tools.build_materials_selected", text="Build Materials", icon='NODETREE')
+
 class UMODELTOOLS_PG_umap_scan_result(bpy.types.PropertyGroup):
     map_name: bpy.props.StringProperty(name="Map")
     map_path: bpy.props.StringProperty(name="Path")

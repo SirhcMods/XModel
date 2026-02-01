@@ -19,6 +19,330 @@ from . import preferences
 from .utils import get_selected_vertex_world_bounds
 
 
+def _index_mindseye_mi_json(export_dir: str) -> dict[str, str]:
+    """Build a mapping of MI material name -> absolute json path.
+
+    We index by filename without extension (e.g. "MI_LayeringME_ConcreteBare_01").
+    """
+    out: dict[str, str] = {}
+    for root, _dirs, files in os.walk(export_dir):
+        for fn in files:
+            if not fn.endswith('.json'):
+                continue
+            # We mostly care about material instances; indexing all json is cheap enough.
+            key = os.path.splitext(fn)[0]
+            if key not in out:
+                out[key] = os.path.join(root, fn)
+    return out
+
+
+def _unwrap_mi_json(mi_raw: t.Any) -> dict:
+    """FModel sometimes exports a list of exports; choose the dict that looks like an MI."""
+    if isinstance(mi_raw, dict):
+        return mi_raw
+    if isinstance(mi_raw, list):
+        for entry in mi_raw:
+            if isinstance(entry, dict) and ('Textures' in entry or 'Parameters' in entry):
+                return entry
+        # fallback: first dict
+        for entry in mi_raw:
+            if isinstance(entry, dict):
+                return entry
+    return {}
+
+
+def _mi_tex_objectpath_to_relpath(tex_obj: str) -> str:
+    """Convert Unreal ObjectPath-like string to a relative file path base (no extension).
+
+    Example:
+      "/Game/.../T_def_White_d.T_def_White_d" -> "Game/.../T_def_White_d"
+      "/MindsEye/Content/.../T_def_White_d.T_def_White_d" -> "MindsEye/Content/.../T_def_White_d"
+    """
+    tex_obj = tex_obj.strip()
+    if tex_obj.startswith('Texture'):
+        # Sometimes values come as "Texture2D'...path...'". Strip wrapper.
+        q1 = tex_obj.find("'")
+        q2 = tex_obj.rfind("'")
+        if q1 != -1 and q2 != -1 and q2 > q1:
+            tex_obj = tex_obj[q1 + 1:q2]
+
+    # Drop leading slash
+    tex_obj = tex_obj.lstrip('/')
+    # Keep part before first dot (the package path)
+    if '.' in tex_obj:
+        tex_obj = tex_obj.split('.', 1)[0]
+    return os.path.normpath(tex_obj)
+
+
+def _remap_game_root(rel_no_ext: str) -> str:
+    # Mindseye: FModel exports under MindsEye/Content rather than /Game
+    rel_no_ext = rel_no_ext.replace('\\', '/')
+    if rel_no_ext.startswith('Game/'):
+        return 'MindsEye/Content/' + rel_no_ext[len('Game/'):]
+    return rel_no_ext
+
+
+def _new_node(nodes, node_type: str, loc: tuple[float, float]):
+    n = nodes.new(node_type)
+    n.location = loc
+    return n
+
+
+def _build_nodes_from_mi(material: bpy.types.Material,
+                         mi: dict,
+                         export_dir: str,
+                         texture_ext: str,
+                         verbose: bool = False) -> tuple[int, int]:
+    """Build a principled material from a Mindseye MI json.
+
+    Returns (textures_used, textures_missing).
+    """
+    material.use_nodes = True
+    nt = material.node_tree
+    nodes = nt.nodes
+    links = nt.links
+    nodes.clear()
+
+    out = _new_node(nodes, 'ShaderNodeOutputMaterial', (600, 0))
+    bsdf = _new_node(nodes, 'ShaderNodeBsdfPrincipled', (250, 0))
+    links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
+
+    tex_dict = mi.get('Textures') or {}
+    if not isinstance(tex_dict, dict):
+        tex_dict = {}
+
+    used = 0
+    missing = 0
+
+    def load_image_for_objectpath(obj_path: str) -> bpy.types.Image | None:
+        rel_no_ext = _mi_tex_objectpath_to_relpath(obj_path)
+        rel_no_ext = _remap_game_root(rel_no_ext)
+        rel = rel_no_ext + texture_ext
+        abs_path = os.path.join(export_dir, rel)
+        if not os.path.isfile(abs_path):
+            return None
+        try:
+            return bpy.data.images.load(abs_path, check_existing=True)
+        except Exception:
+            return None
+
+    def tex_basename_from_objectpath(obj_path: str) -> str:
+        # '/Path/Foo.Bar' -> 'Foo'
+        rel_no_ext = _mi_tex_objectpath_to_relpath(obj_path)
+        return os.path.basename(rel_no_ext).replace('\\', '/').split('/')[-1]
+
+    def base_prefix(name: str) -> str:
+        # Strip common surface suffixes so 'T_ConcreteBare_01_D' and '..._M' match.
+        for suf in ('_DN', '_D', '_N'):
+            if name.endswith(suf):
+                return name[:-len(suf)]
+        return name
+
+    # -------------------------------------------------------
+    # Mindseye: keep it simple.
+    # - BaseColor -> Base Color
+    # - Normal -> Normal
+    # - Packed map: only include a *_M whose prefix matches the BaseColor texture prefix
+    #   (e.g. T_ConcreteBare_01_D -> T_ConcreteBare_01_M)
+    # -------------------------------------------------------
+
+    base_obj = tex_dict.get('BaseColor')
+    norm_obj = tex_dict.get('Normal')
+
+    base_prefix_key = None
+    if isinstance(base_obj, str) and base_obj:
+        base_name = tex_basename_from_objectpath(base_obj)
+        base_prefix_key = base_prefix(base_name)
+
+    packed_obj = None
+    packed_key = None
+    if base_prefix_key:
+        # Find a texture asset whose basename ends with '_M' and matches the base prefix.
+        for k, v in tex_dict.items():
+            if not isinstance(v, str) or not v:
+                continue
+            n = tex_basename_from_objectpath(v)
+            if not n.endswith('_M'):
+                continue
+            if base_prefix(n) == base_prefix_key:
+                packed_obj = v
+                packed_key = k
+                break
+
+    if verbose:
+        print(
+            f"[BuildMaterials] {material.name}: BaseColor={'OK' if base_obj else 'None'} "
+            f"Normal={'OK' if norm_obj else 'None'} PackedM={'OK' if packed_obj else 'None'}"
+        )
+        if packed_obj and packed_key and packed_key != 'Mask':
+            print(f"[BuildMaterials] {material.name}: Using packed _M from key '{packed_key}'")
+
+    y = 0
+
+    # BaseColor
+    if isinstance(base_obj, str) and base_obj:
+        img = load_image_for_objectpath(base_obj)
+        if img is None:
+            missing += 1
+            if verbose:
+                print(f"[BuildMaterials] Missing BaseColor for {material.name}: {base_obj}")
+        else:
+            n = _new_node(nodes, 'ShaderNodeTexImage', (-500, y))
+            n.image = img
+            n.label = 'BaseColor'
+            links.new(n.outputs['Color'], bsdf.inputs['Base Color'])
+            used += 1
+            y -= 260
+
+    # Normal
+    if isinstance(norm_obj, str) and norm_obj:
+        img = load_image_for_objectpath(norm_obj)
+        if img is None:
+            missing += 1
+            if verbose:
+                print(f"[BuildMaterials] Missing Normal for {material.name}: {norm_obj}")
+        else:
+            img.colorspace_settings.name = 'Non-Color'
+            n = _new_node(nodes, 'ShaderNodeTexImage', (-500, y))
+            n.image = img
+            n.label = 'Normal'
+            nmap = _new_node(nodes, 'ShaderNodeNormalMap', (-250, y))
+            links.new(n.outputs['Color'], nmap.inputs['Color'])
+            links.new(nmap.outputs['Normal'], bsdf.inputs['Normal'])
+            used += 1
+            y -= 260
+
+    # Packed _M (assume G=Roughness, B=Metallic)
+    if isinstance(packed_obj, str) and packed_obj:
+        img = load_image_for_objectpath(packed_obj)
+        if img is None:
+            missing += 1
+            if verbose:
+                print(f"[BuildMaterials] Missing packed _M for {material.name}: {packed_obj}")
+        else:
+            img.colorspace_settings.name = 'Non-Color'
+            n = _new_node(nodes, 'ShaderNodeTexImage', (-500, y))
+            n.image = img
+            n.label = 'Packed_M'
+            sep = _new_node(nodes, 'ShaderNodeSeparateRGB', (-250, y - 40))
+            links.new(n.outputs['Color'], sep.inputs['Image'])
+            links.new(sep.outputs['G'], bsdf.inputs['Roughness'])
+            links.new(sep.outputs['B'], bsdf.inputs['Metallic'])
+            used += 1
+            y -= 260
+
+    return used, missing
+
+
+class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
+    """Build Mindseye/FModel materials for selected objects from MI json exports."""
+
+    bl_idname = "umodel_tools.build_materials_selected"
+    bl_label = "Build Materials"
+    bl_description = "For selected meshes, locate MaterialInstance json exports and build shader nodes"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    texture_format: bpy.props.EnumProperty(
+        name="Texture format",
+        description="Format of textures expected in the FModel export directory.",
+        items=[
+            ('.png', '.png', '', 0),
+            ('.dds', '.dds', '', 1),
+            ('.tga', '.tga', '', 2)
+        ],
+        default='.png'
+    )
+
+    rebuild_existing: bpy.props.BoolProperty(
+        name="Rebuild existing",
+        description="If enabled, rebuild node trees even if they already have nodes",
+        default=True
+    )
+
+    def invoke(self, context: bpy.types.Context, _event: bpy.types.Event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context: bpy.types.Context):
+        prefs = preferences.get_addon_preferences()
+        profile = prefs.get_active_profile()
+        if profile is None:
+            self.report({'ERROR'}, "No active game profile selected")
+            return {'CANCELLED'}
+
+        export_dir = os.path.normpath(profile.umodel_export_dir)
+        export_dir = export_dir[1:] if export_dir.startswith(os.sep) else export_dir
+        if not export_dir or not os.path.isdir(export_dir):
+            self.report({'ERROR'}, "Export Directory is not set or does not exist")
+            return {'CANCELLED'}
+
+        verbose = bool(prefs.verbose)
+
+        # build MI json index once
+        if verbose:
+            print(f"[BuildMaterials] Indexing json files under: {export_dir}")
+        mi_index = _index_mindseye_mi_json(export_dir)
+        if verbose:
+            print(f"[BuildMaterials] Indexed {len(mi_index)} json files")
+
+        sel = [o for o in context.selected_objects if o and o.type == 'MESH']
+        if not sel:
+            self.report({'WARNING'}, "No selected mesh objects")
+            return {'CANCELLED'}
+
+        total_mats = 0
+        built_mats = 0
+        used_total = 0
+        missing_total = 0
+
+        for obj in sel:
+            if obj.data is None:
+                continue
+
+            for mat in obj.data.materials:
+                if mat is None:
+                    continue
+                total_mats += 1
+
+                # Skip if already has a principled setup and rebuild_existing is False
+                if not self.rebuild_existing and mat.use_nodes and mat.node_tree and mat.node_tree.nodes:
+                    continue
+
+                # Find MI json by material name
+                mi_path = mi_index.get(mat.name)
+                if mi_path is None:
+                    # fallback: strip numeric suffix like ".001"
+                    base = mat.name.split('.', 1)[0]
+                    mi_path = mi_index.get(base)
+
+                if mi_path is None:
+                    if verbose:
+                        print(f"[BuildMaterials] No MI json found for material '{mat.name}'")
+                    continue
+
+                try:
+                    with open(mi_path, 'r', encoding='utf-8') as f:
+                        mi_raw = json.load(f)
+                    mi = _unwrap_mi_json(mi_raw)
+                except Exception as e:
+                    if verbose:
+                        print(f"[BuildMaterials] Failed reading '{mi_path}': {e}")
+                    continue
+
+                used, missing = _build_nodes_from_mi(
+                    material=mat,
+                    mi=mi,
+                    export_dir=export_dir,
+                    texture_ext=self.texture_format,
+                    verbose=verbose
+                )
+                built_mats += 1
+                used_total += used
+                missing_total += missing
+
+        self.report({'INFO'}, f"Built {built_mats}/{total_mats} material(s). Textures used={used_total}, missing={missing_total}")
+        return {'FINISHED'}
+
+
 def _get_object_aabb_verts(obj: bpy.types.Object) -> list[tuple[float, float, float]]:
     return [obj.matrix_world @ mu.Vector(corner) for corner in obj.bound_box]
 
