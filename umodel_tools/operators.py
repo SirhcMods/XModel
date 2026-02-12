@@ -51,6 +51,25 @@ def _unwrap_mi_json(mi_raw: t.Any) -> dict:
     return {}
 
 
+def _mi_has_palette(mi: dict) -> bool:
+    """Heuristic: does this MI reference the 16x16 tint palette texture?"""
+    try:
+        tex_params = mi.get('TextureParameterValues') or []
+        if not isinstance(tex_params, list):
+            return False
+        for entry in tex_params:
+            if not isinstance(entry, dict):
+                continue
+            v = entry.get('ParameterValue')
+            if not isinstance(v, str):
+                continue
+            if 'ColorPallet' in v or 'ColorPalette' in v or 'T_ColorPallet_01' in v or 'T_ColorPalette' in v:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _mi_tex_objectpath_to_relpath(tex_obj: str) -> str:
     """Convert Unreal ObjectPath-like string to a relative file path base (no extension).
 
@@ -74,11 +93,19 @@ def _mi_tex_objectpath_to_relpath(tex_obj: str) -> str:
     return os.path.normpath(tex_obj)
 
 
-def _remap_game_root(rel_no_ext: str) -> str:
+def _remap_game_root(rel_no_ext: str, game_profile: str) -> str:
+    """Remap UE-style /Game paths to whatever root the current profile exports under.
+
+    Historically this addon was Mindseye-only for MI-json building and always remapped
+    `Game/...` -> `MindsEye/Content/...`. That broke other profiles.
+    """
+    rel_no_ext = rel_no_ext.replace('\\', '/').lstrip('/')
+
     # Mindseye: FModel exports under MindsEye/Content rather than /Game
-    rel_no_ext = rel_no_ext.replace('\\', '/')
-    if rel_no_ext.startswith('Game/'):
+    if game_profile == 'mindseye' and rel_no_ext.startswith('Game/'):
         return 'MindsEye/Content/' + rel_no_ext[len('Game/'):]
+
+    # Default: no remap
     return rel_no_ext
 
 
@@ -88,12 +115,95 @@ def _new_node(nodes, node_type: str, loc: tuple[float, float]):
     return n
 
 
+def _decode_palette_xy(
+    per_instance_custom_data: list[float] | None,
+    per_instance_tint_ids: list[int] | None,
+    material_slot_index: int,
+    grid_size: int = 16,
+) -> tuple[int, int] | None:
+    """Return (col,row) into a GRID_SIZE x GRID_SIZE color palette.
+
+    Based on your findings:
+    - Data is arranged in packets of 11 floats.
+    - Palette indices for material slots live at offsets:
+        slot 0 -> offset 0
+        slot 1 -> offset 4
+        slot 2 -> offset 5
+      (If a mesh has >3 slots we currently fall back to slot 0.)
+    """
+
+    # Preferred: per-object decoded tint IDs (one per material slot)
+    if per_instance_tint_ids:
+        if 0 <= material_slot_index < len(per_instance_tint_ids):
+            palette_id_int = int(per_instance_tint_ids[material_slot_index])
+            col = int(palette_id_int % grid_size)
+            row = int(palette_id_int // grid_size)
+            return col, row
+
+    if not per_instance_custom_data:
+        return None
+
+    slot_offsets = {0: 0, 1: 4, 2: 5}
+    off = slot_offsets.get(material_slot_index, 0)
+
+    if len(per_instance_custom_data) < off + 1:
+        return None
+
+    # Use the first packet. In most of your samples it's repeated per instance.
+    palette_id = per_instance_custom_data[off]
+
+    try:
+        palette_id_int = int(palette_id)
+    except Exception:
+        return None
+
+    col = int(palette_id_int % grid_size)
+    row = int(palette_id_int // grid_size)
+    return col, row
+
+
+def _decode_palette_id(
+    per_instance_custom_data: list,
+    per_instance_tint_ids: list | None,
+    material_slot_index: int,
+) -> int | None:
+    """Return the palette ID (0..255) for a given material slot.
+
+    Priority:
+    1) If we already extracted per-material-slot tint IDs for this instance, use that.
+    2) Otherwise fall back to reading the float from the per-instance packet using
+       the same slot-offset scheme as `_decode_palette_xy`.
+    """
+    # 1) Preferred: explicit tint IDs extracted per slot for this instance.
+    if per_instance_tint_ids and material_slot_index < len(per_instance_tint_ids):
+        try:
+            return int(per_instance_tint_ids[material_slot_index])
+        except Exception:
+            pass
+
+    # 2) Fallback: read from the packet.
+    SLOT_OFFSETS = {0: 0, 1: 4, 2: 5}
+    offset = SLOT_OFFSETS.get(material_slot_index)
+    if offset is None:
+        return None
+    if not per_instance_custom_data or offset >= len(per_instance_custom_data):
+        return None
+    try:
+        return int(per_instance_custom_data[offset])
+    except Exception:
+        return None
+
+
 def _build_nodes_from_mi(material: bpy.types.Material,
                          mi: dict,
                          export_dir: str,
                          texture_ext: str,
+                         game_profile: str,
+                         per_instance_custom_data: list[float] | None,
+                         per_instance_tint_ids: list[int] | None,
+                         material_slot_index: int,
                          verbose: bool = False) -> tuple[int, int]:
-    """Build a principled material from a Mindseye MI json.
+    """Build a principled material from an MI json.
 
     Returns (textures_used, textures_missing).
     """
@@ -116,7 +226,7 @@ def _build_nodes_from_mi(material: bpy.types.Material,
 
     def load_image_for_objectpath(obj_path: str) -> bpy.types.Image | None:
         rel_no_ext = _mi_tex_objectpath_to_relpath(obj_path)
-        rel_no_ext = _remap_game_root(rel_no_ext)
+        rel_no_ext = _remap_game_root(rel_no_ext, game_profile)
         rel = rel_no_ext + texture_ext
         abs_path = os.path.join(export_dir, rel)
         if not os.path.isfile(abs_path):
@@ -149,6 +259,16 @@ def _build_nodes_from_mi(material: bpy.types.Material,
     base_obj = tex_dict.get('BaseColor')
     norm_obj = tex_dict.get('Normal')
 
+    # Optional 16x16 tint palette used by some Mindseye materials
+    palette_obj = None
+    for k, v in tex_dict.items():
+        if not isinstance(v, str) or not v:
+            continue
+        bn = tex_basename_from_objectpath(v)
+        if bn == 'T_ColorPallet_01' or bn.startswith('T_ColorPallet_01'):
+            palette_obj = v
+            break
+
     base_prefix_key = None
     if isinstance(base_obj, str) and base_obj:
         base_name = tex_basename_from_objectpath(base_obj)
@@ -179,20 +299,122 @@ def _build_nodes_from_mi(material: bpy.types.Material,
 
     y = 0
 
-    # BaseColor
+    # BaseColor (optionally mixed with palette tint)
+    base_tex_node = None
+    base_img = None
     if isinstance(base_obj, str) and base_obj:
-        img = load_image_for_objectpath(base_obj)
-        if img is None:
+        base_img = load_image_for_objectpath(base_obj)
+        if base_img is None:
             missing += 1
             if verbose:
                 print(f"[BuildMaterials] Missing BaseColor for {material.name}: {base_obj}")
         else:
-            n = _new_node(nodes, 'ShaderNodeTexImage', (-500, y))
-            n.image = img
-            n.label = 'BaseColor'
-            links.new(n.outputs['Color'], bsdf.inputs['Base Color'])
+            base_tex_node = _new_node(nodes, 'ShaderNodeTexImage', (-500, y))
+            base_tex_node.image = base_img
+            base_tex_node.label = 'BaseColor'
             used += 1
-            y -= 260
+
+    # If palette texture exists, build the palette sampler + mix.
+    if palette_obj and base_tex_node:
+        pal_img = load_image_for_objectpath(palette_obj)
+        if pal_img is None:
+            missing += 1
+            if verbose:
+                print(f"[BuildMaterials] Missing T_ColorPallet_01 for {material.name}: {palette_obj}")
+        else:
+            # Decode palette ID (0..255) for this material slot, per-instance.
+            # We keep the ID as a single value node (TintID) and derive (col,row)
+            # in the node graph. This avoids needing separate Column/Row inputs
+            # and makes automation simpler.
+            tint_id = _decode_palette_id(
+                per_instance_custom_data=per_instance_custom_data,
+                per_instance_tint_ids=per_instance_tint_ids,
+                material_slot_index=material_slot_index,
+            )
+            if tint_id is None:
+                tint_id = 0
+
+            # Palette Image Texture node
+            pal_tex = _new_node(nodes, 'ShaderNodeTexImage', (-500, y - 260))
+            pal_tex.image = pal_img
+            pal_tex.label = 'T_ColorPallet_01'
+            # Ensure palette is treated as color
+            try:
+                pal_tex.image.colorspace_settings.name = 'sRGB'
+            except Exception:
+                pass
+            pal_tex.interpolation = 'Closest'
+
+            # Value node: TintID
+            tint_node = _new_node(nodes, 'ShaderNodeValue', (-1250, y - 240))
+            tint_node.label = 'TintID'
+            tint_node.outputs[0].default_value = float(tint_id)
+
+            # Derive palette UVs from TintID
+            # col = TintID % 16
+            col_math = _new_node(nodes, 'ShaderNodeMath', (-1050, y - 170))
+            col_math.operation = 'MODULO'
+            col_math.inputs[1].default_value = 16.0
+            links.new(tint_node.outputs[0], col_math.inputs[0])
+
+            # row = floor(TintID / 16)
+            row_div = _new_node(nodes, 'ShaderNodeMath', (-1050, y - 310))
+            row_div.operation = 'DIVIDE'
+            row_div.inputs[1].default_value = 16.0
+            links.new(tint_node.outputs[0], row_div.inputs[0])
+
+            row_floor = _new_node(nodes, 'ShaderNodeMath', (-900, y - 310))
+            row_floor.operation = 'FLOOR'
+            links.new(row_div.outputs[0], row_floor.inputs[0])
+
+            # row_inv = 15 - row
+            sub_row = _new_node(nodes, 'ShaderNodeMath', (-750, y - 310))
+            sub_row.operation = 'SUBTRACT'
+            sub_row.inputs[0].default_value = 15.0
+            links.new(row_floor.outputs[0], sub_row.inputs[1])
+
+            # Build UVs: (col/16 + 0.03125, row_inv/16 + 0.03125)
+            div_col = _new_node(nodes, 'ShaderNodeMath', (-700, y - 170))
+            div_col.operation = 'DIVIDE'
+            div_col.inputs[1].default_value = 16.0
+            links.new(col_math.outputs[0], div_col.inputs[0])
+
+            div_row = _new_node(nodes, 'ShaderNodeMath', (-700, y - 310))
+            div_row.operation = 'DIVIDE'
+            div_row.inputs[1].default_value = 16.0
+            links.new(sub_row.outputs[0], div_row.inputs[0])
+
+            add_col = _new_node(nodes, 'ShaderNodeMath', (-500, y - 170))
+            add_col.operation = 'ADD'
+            add_col.inputs[1].default_value = 0.03125
+            links.new(div_col.outputs[0], add_col.inputs[0])
+
+            add_row = _new_node(nodes, 'ShaderNodeMath', (-500, y - 310))
+            add_row.operation = 'ADD'
+            add_row.inputs[1].default_value = 0.03125
+            links.new(div_row.outputs[0], add_row.inputs[0])
+
+            comb = _new_node(nodes, 'ShaderNodeCombineXYZ', (-250, y - 240))
+            links.new(add_col.outputs[0], comb.inputs['X'])
+            links.new(add_row.outputs[0], comb.inputs['Y'])
+
+            links.new(comb.outputs['Vector'], pal_tex.inputs['Vector'])
+
+            mix = _new_node(nodes, 'ShaderNodeMixRGB', (-150, y - 50))
+            mix.blend_type = 'MIX'
+            mix.use_clamp = True
+            mix.inputs['Fac'].default_value = 1.0
+            mix.label = 'PaletteMix'
+            links.new(base_tex_node.outputs['Color'], mix.inputs['Color1'])
+            links.new(pal_tex.outputs['Color'], mix.inputs['Color2'])
+            links.new(mix.outputs['Color'], bsdf.inputs['Base Color'])
+
+            y -= 520
+
+    # No palette: just wire base color
+    if base_tex_node and not bsdf.inputs['Base Color'].is_linked:
+        links.new(base_tex_node.outputs['Color'], bsdf.inputs['Base Color'])
+        y -= 260
 
     # Normal
     if isinstance(norm_obj, str) and norm_obj:
@@ -280,6 +502,7 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
         # build MI json index once
         if verbose:
             print(f"[BuildMaterials] Indexing json files under: {export_dir}")
+        # Index MI json files once (shared across profiles). Path remapping happens per-profile.
         mi_index = _index_mindseye_mi_json(export_dir)
         if verbose:
             print(f"[BuildMaterials] Indexed {len(mi_index)} json files")
@@ -298,7 +521,24 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
             if obj.data is None:
                 continue
 
-            for mat in obj.data.materials:
+            mesh_made_single_user = False
+
+            per_inst_custom = None
+            per_inst_tint_ids = None
+            if isinstance(obj, bpy.types.Object):
+                try:
+                    if "PerInstanceSMCustomDataPacket" in obj.keys():
+                        per_inst_custom = list(obj["PerInstanceSMCustomDataPacket"])
+                    elif "PerInstanceSMCustomData" in obj.keys():
+                        per_inst_custom = list(obj["PerInstanceSMCustomData"])
+                    if "TintID" in obj.keys():
+                        # Stored as a list of IDs (one per material slot), even if only 1 slot.
+                        per_inst_tint_ids = [int(v) for v in list(obj["TintID"]) ]
+                except Exception:
+                    per_inst_custom = None
+                    per_inst_tint_ids = None
+
+            for slot_index, mat in enumerate(obj.data.materials):
                 if mat is None:
                     continue
                 total_mats += 1
@@ -328,11 +568,41 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
                         print(f"[BuildMaterials] Failed reading '{mi_path}': {e}")
                     continue
 
+                # Palette tints are per-instance.
+                # Two separate Blender pitfalls to avoid:
+                #  1) Materials are shared datablocks (mat.users>1) -> changing node values affects all users.
+                #  2) Material slots live on the Mesh datablock (obj.data). If multiple objects share the same
+                #     mesh (obj.data.users>1), assigning a different material to obj.data.materials[...] will
+                #     affect *all* objects that share that mesh.
+                #
+                # So if this MI uses a palette texture and this object has tint IDs, we make the mesh and
+                # material single-user as needed before building nodes.
+                if per_inst_tint_ids is not None and _mi_has_palette(mi):
+                    if (not mesh_made_single_user) and obj.data.users > 1:
+                        try:
+                            obj.data = obj.data.copy()
+                            mesh_made_single_user = True
+                        except Exception:
+                            pass
+
+                    if mat.users > 1:
+                        try:
+                            new_mat = mat.copy()
+                            new_mat.name = f"{mat.name}__{obj.name}"
+                            obj.data.materials[slot_index] = new_mat
+                            mat = new_mat
+                        except Exception:
+                            pass
+
                 used, missing = _build_nodes_from_mi(
                     material=mat,
                     mi=mi,
                     export_dir=export_dir,
                     texture_ext=self.texture_format,
+                    game_profile=profile.game,
+                    per_instance_custom_data=per_inst_custom,
+                    per_instance_tint_ids=per_inst_tint_ids,
+                    material_slot_index=slot_index,
                     verbose=verbose
                 )
                 built_mats += 1

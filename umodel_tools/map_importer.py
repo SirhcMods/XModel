@@ -253,6 +253,12 @@ class StaticMesh:
 
                     self.instance_transforms.append(trs)
 
+        # Optional: UE's InstancedStaticMeshComponent can store a flat array of floats used by
+        # materials (PerInstanceSMCustomData). Some Mindseye materials use it to pick a color
+        # from a 16x16 palette. We preserve it so material building can decode tint indices.
+        custom_data = json_entity.get("PerInstanceSMCustomData")
+        self.per_instance_sm_custom_data = custom_data if isinstance(custom_data, list) else None
+
     @property
     def invalid(self) -> bool:
         return (self.no_path or self.no_entity or self.base_shape or self.no_mesh or self.no_per_instance_data
@@ -269,10 +275,128 @@ class StaticMesh:
         trs = self.transform
 
         if self.is_instanced:
-            for instance_trs in self.instance_transforms:
+            # PerInstanceSMCustomData is a flattened float stream. In practice, some assets have a
+            # clean fixed packet size (e.g. 11 floats) while others appear "ragged" (subsections that
+            # look like 11, then 4, then 1, etc.). For tinting we only need the *palette indices*.
+            #
+            # Strategy:
+            #   1) Extract only "TintID" candidates (integer-ish floats within 0..255).
+            #   2) Group them per instance by the material slot count.
+            #   3) Store per-instance TintIDs on each spawned object.
+            #
+            # This avoids drift from assuming a fixed stride while still preserving correct per-slot
+            # tint mapping.
+            tint_ids_by_instance: list[list[int]] | None = None
+            # All unique TintID candidates present anywhere in PerInstanceSMCustomData.
+            # Stored on the object for quick manual override/debug.
+            tint_id_candidates_all: list[int] = []
+
+            # Determine how many tint IDs belong to each instance: one per material slot.
+            slot_count = 0
+            try:
+                slot_count = len(obj.data.materials) if obj.data and hasattr(obj.data, 'materials') else 0
+            except Exception:
+                slot_count = 0
+            if slot_count <= 0:
+                slot_count = 1
+
+            if isinstance(self.per_instance_sm_custom_data, list):
+                cd = self.per_instance_sm_custom_data
+
+                def _is_intish_0_255(v: object) -> bool:
+                    try:
+                        f = float(v)
+                    except Exception:
+                        return False
+                    if abs(f - round(f)) > 1e-4:
+                        return False
+                    i = int(round(f))
+                    return 0 <= i <= 255
+
+                # Collect unique TintID candidates in order of first appearance.
+                for v in cd:
+                    if _is_intish_0_255(v):
+                        ii = int(round(float(v)))
+                        if ii not in tint_id_candidates_all:
+                            tint_id_candidates_all.append(ii)
+
+                # First try: detect 11-float "packets" via a start signature, then extract IDs
+                # from expected offsets (slot0/1/2 => 0/4/5) within each packet.
+                # This handles the common case while avoiding drift when the array looks ragged.
+                offsets = [0]
+                if slot_count == 2:
+                    offsets = [0, 4]
+                elif slot_count >= 3:
+                    offsets = [0, 4, 5][:slot_count]
+
+                packet_ids: list[list[int]] = []
+                i = 0
+                while i < len(cd) and len(packet_ids) < len(self.instance_transforms):
+                    if _is_intish_0_255(cd[i]) and (i + 3) < len(cd):
+                        # "packet start" signature: ID followed by a few <=1.0 scalars
+                        try:
+                            n1 = float(cd[i + 1]); n2 = float(cd[i + 2]); n3 = float(cd[i + 3])
+                        except Exception:
+                            n1 = n2 = n3 = 999.0
+                        if abs(n1) <= 1.0 + 1e-4 and abs(n2) <= 1.0 + 1e-4 and abs(n3) <= 1.0 + 1e-4:
+                            ids: list[int] = []
+                            for off in offsets:
+                                j = i + off
+                                if j < len(cd) and _is_intish_0_255(cd[j]):
+                                    ids.append(int(round(float(cd[j]))))
+                                else:
+                                    ids.append(0)
+                            packet_ids.append(ids)
+                            i += 11
+                            continue
+                    i += 1
+
+                if len(packet_ids) == len(self.instance_transforms):
+                    tint_ids_by_instance = packet_ids
+                else:
+                    # Fallback: extract ALL int-ish IDs (0..255) and group sequentially.
+                    tint_stream = [int(round(float(v))) for v in cd if _is_intish_0_255(v)]
+                    if tint_stream:
+                        tint_ids_by_instance = []
+                        for inst_index in range(len(self.instance_transforms)):
+                            start = inst_index * slot_count
+                            end = start + slot_count
+                            ids = tint_stream[start:end]
+                            if len(ids) < slot_count:
+                                pad_val = ids[-1] if ids else 0
+                                ids = list(ids) + [pad_val] * (slot_count - len(ids))
+                            tint_ids_by_instance.append(list(map(int, ids)))
+
+            for inst_index, instance_trs in enumerate(self.instance_transforms):
                 mat_world = trs.matrix_4x4 @ instance_trs.matrix_4x4
                 new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
                 new_obj.rotation_mode = 'XYZ'
+
+                if tint_ids_by_instance is not None and inst_index < len(tint_ids_by_instance):
+                    # "TintID" is a list of palette indices, one per material slot (slot order).
+                    # (Kept as a list because multi-material meshes need multiple IDs.)
+                    current_ids = list(map(int, tint_ids_by_instance[inst_index]))
+                    new_obj["TintID"] = current_ids
+
+                    # "TintIDCandidates" is a unique list of every plausible TintID found in
+                    # the full PerInstanceSMCustomData stream (order preserved). We put the
+                    # currently applied IDs first, so the first element(s) match TintID.
+                    candidates = []
+                    for cid in current_ids:
+                        if cid not in candidates:
+                            candidates.append(cid)
+                    for cid in tint_id_candidates_all:
+                        if cid not in candidates:
+                            candidates.append(cid)
+                    new_obj["TintIDCandidates"] = candidates
+
+                    new_obj["PerInstanceSMCustomDataIndex"] = int(inst_index)
+                elif self.per_instance_sm_custom_data is not None:
+                    # Fallback: preserve whole list (useful for debugging)
+                    try:
+                        new_obj["PerInstanceSMCustomData"] = list(self.per_instance_sm_custom_data)
+                    except Exception:
+                        pass
 
                 if self.parent_mtx is None:
                     new_obj.matrix_world = mat_world
