@@ -1049,32 +1049,8 @@ def pskimport(filepath,
 
         if Normals is not None:
             mesh_data.polygons.foreach_set("use_smooth", [True] * len(mesh_data.polygons))
-
-            # NOTE:
-            # Applying custom split normals can be very memory/CPU heavy and may crash Blender
-            # on extremely high-poly imports. We re-enable it, but skip it past a safety threshold.
-            try:
-                _vcount = len(Vertices) if Vertices is not None else len(mesh_data.vertices)
-                _pcount = len(mesh_data.polygons)
-
-                # Conservative threshold: avoids freezing/crashing on huge Nanite-like meshes.
-                # (You can bump these later if your machine handles it.)
-                _MAX_VERTS_FOR_CUSTOM_NORMALS = 500_000
-                _MAX_POLYS_FOR_CUSTOM_NORMALS = 500_000
-
-                if _vcount > _MAX_VERTS_FOR_CUSTOM_NORMALS or _pcount > _MAX_POLYS_FOR_CUSTOM_NORMALS:
-                    print(
-                        f"[UModelTools] Skipping custom split normals for '{mesh_data.name}' "
-                        f"(verts={_vcount:,}, polys={_pcount:,}) to avoid crashes."
-                    )
-                else:
-                    mesh_data.normals_split_custom_set_from_vertices(Normals)
-                    mesh_data.use_auto_smooth = True
-            except Exception as ex:
-                print(
-                    f"[UModelTools] Warning: failed to apply custom split normals for '{mesh_data.name}'. "
-                    f"Skipping. Reason: {ex}"
-                )
+            #mesh_data.normals_split_custom_set_from_vertices(Normals)
+            #mesh_data.use_auto_smooth = True
 
     #===================================================================================================
     # UV. Set.
