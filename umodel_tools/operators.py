@@ -475,6 +475,12 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
         default='.png'
     )
 
+    disable_material_linking: bpy.props.BoolProperty(
+        name="Disable material linking",
+        description="Make mesh and materials single-user before building so per-object/per-slot tints don't override shared materials",
+        default=True
+    )
+
     rebuild_existing: bpy.props.BoolProperty(
         name="Rebuild existing",
         description="If enabled, rebuild node trees even if they already have nodes",
@@ -548,10 +554,11 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
                     continue
 
                 # Find MI json by material name
-                mi_path = mi_index.get(mat.name)
+                lookup_name = mat.name.split("__", 1)[0]
+                mi_path = mi_index.get(lookup_name)
                 if mi_path is None:
                     # fallback: strip numeric suffix like ".001"
-                    base = mat.name.split('.', 1)[0]
+                    base = lookup_name.split('.', 1)[0]
                     mi_path = mi_index.get(base)
 
                 if mi_path is None:
@@ -568,16 +575,12 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
                         print(f"[BuildMaterials] Failed reading '{mi_path}': {e}")
                     continue
 
-                # Palette tints are per-instance.
-                # Two separate Blender pitfalls to avoid:
-                #  1) Materials are shared datablocks (mat.users>1) -> changing node values affects all users.
-                #  2) Material slots live on the Mesh datablock (obj.data). If multiple objects share the same
-                #     mesh (obj.data.users>1), assigning a different material to obj.data.materials[...] will
-                #     affect *all* objects that share that mesh.
+                # Palette tints are per-instance (stored on the object), but Blender materials/meshes can be shared datablocks.
+                # If we edit a shared material, the *last* object we process "wins" and overwrites tints/textures for all users.
+                # Likewise, if multiple objects share the same Mesh datablock, changing obj.data.materials[...] affects all of them.
                 #
-                # So if this MI uses a palette texture and this object has tint IDs, we make the mesh and
-                # material single-user as needed before building nodes.
-                if per_inst_tint_ids is not None and _mi_has_palette(mi):
+                # When enabled, this makes the selected objects single-user before we build nodes.
+                if self.disable_material_linking:
                     if (not mesh_made_single_user) and obj.data.users > 1:
                         try:
                             obj.data = obj.data.copy()
@@ -585,10 +588,29 @@ class UMODELTOOLS_OT_build_materials_selected(bpy.types.Operator):
                         except Exception:
                             pass
 
-                    if mat.users > 1:
+                    # If the object stores per-slot TintID and the MI uses a palette, two slots that start out sharing the same
+                    # material datablock but have different TintIDs must not share a single material.
+                    needs_split_for_slots = False
+                    if per_inst_tint_ids is not None and _mi_has_palette(mi):
+                        try:
+                            this_tint = per_inst_tint_ids[slot_index] if slot_index < len(per_inst_tint_ids) else None
+                            # If any other slot uses the same material datablock but a different tint, split
+                            for j, m2 in enumerate(obj.data.materials):
+                                if j == slot_index or m2 is None:
+                                    continue
+                                if m2 is mat:
+                                    other_tint = per_inst_tint_ids[j] if j < len(per_inst_tint_ids) else None
+                                    if other_tint != this_tint:
+                                        needs_split_for_slots = True
+                                        break
+                        except Exception:
+                            needs_split_for_slots = True
+
+                    if mat.users > 1 or needs_split_for_slots:
                         try:
                             new_mat = mat.copy()
-                            new_mat.name = f"{mat.name}__{obj.name}"
+                            # Keep the same base name; Blender will append .### if needed.
+                            new_mat.name = mat.name.split("__", 1)[0]
                             obj.data.materials[slot_index] = new_mat
                             mat = new_mat
                         except Exception:
