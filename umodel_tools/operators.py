@@ -15,6 +15,7 @@ from . import asset_importer
 from . import asset_db
 from . import map_importer
 from . import preferences
+from . import game_profiles
 
 from .utils import get_selected_vertex_world_bounds
 
@@ -259,6 +260,27 @@ def _build_nodes_from_mi(material: bpy.types.Material,
     base_obj = tex_dict.get('BaseColor')
     norm_obj = tex_dict.get('Normal')
 
+    mask_obj = tex_dict.get('Mask') or tex_dict.get('ORM') or tex_dict.get('OcclusionRoughnessMetallic') or tex_dict.get('PackedMask')
+
+    # Debug: log resolved texture paths for key maps (BaseColor/Normal/Mask)
+    def _debug_tex_path(label: str, obj_path: str | None):
+        try:
+            if not obj_path:
+                print(f"[UMODELTOOLS][MI DEBUG] {material.name}: {label}: <none>")
+                return
+            rel_no_ext = _mi_tex_objectpath_to_relpath(obj_path)
+            rel_no_ext = _remap_game_root(rel_no_ext, game_profile)
+            rel = rel_no_ext + texture_ext
+            abs_path = os.path.join(export_dir, rel)
+            print(f"[UMODELTOOLS][MI DEBUG] {material.name}: {label}: {obj_path}")
+            print(f"[UMODELTOOLS][MI DEBUG] {material.name}: {label} -> {abs_path} (exists={os.path.isfile(abs_path)})")
+        except Exception as e:
+            print(f"[UMODELTOOLS][MI DEBUG] {material.name}: {label}: <error: {e}>")
+
+    _debug_tex_path("BaseColor", base_obj)
+    _debug_tex_path("Normal", norm_obj)
+    _debug_tex_path("Mask", mask_obj)
+
     # Optional 16x16 tint palette used by some Mindseye materials
     palette_obj = None
     for k, v in tex_dict.items():
@@ -453,6 +475,39 @@ def _build_nodes_from_mi(material: bpy.types.Material,
             used += 1
             y -= 260
 
+    # -------------------------------------------------------
+    # Profile hook: allow the active game profile to postprocess
+    # the MI-built material (e.g., Mindseye adds ORM from "Mask").
+    # -------------------------------------------------------
+    handler = game_profiles.GAME_HANDLERS.get(game_profile)
+    post_fn = getattr(handler, "postprocess_material_from_mi", None) if handler else None
+
+    # Defensive: if for some reason the handler registry doesn't include the active profile,
+    # try importing the module directly (helps during dev / hot-reload / partial installs).
+    if post_fn is None and game_profile == "mindseye":
+        try:
+            from .game_profiles import mindseye as _mindseye_mod
+            post_fn = getattr(_mindseye_mod, "postprocess_material_from_mi", None)
+        except Exception:
+            post_fn = None
+
+    if callable(post_fn):
+        try:
+            post_fn(
+                material=material,
+                mi=mi,
+                load_image_for_objectpath=load_image_for_objectpath,
+                export_dir=export_dir,
+                texture_ext=texture_ext,
+                game_profile=game_profile,
+                per_instance_custom_data=per_instance_custom_data,
+                per_instance_tint_ids=per_instance_tint_ids,
+                material_slot_index=material_slot_index,
+                verbose=verbose,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"[umodel_tools] postprocess_material_from_mi failed for {material.name}: {e}")
     return used, missing
 
 

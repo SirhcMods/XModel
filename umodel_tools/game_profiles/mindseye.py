@@ -374,3 +374,152 @@ def handle_material_texture_simple(mat: bpy.types.Material,
 
 def end_process_material(mat: bpy.types.Material) -> None:
     _ = mat
+
+
+
+def postprocess_material_from_mi(
+    material: bpy.types.Material,
+    mi: dict,
+    load_image_for_objectpath,
+    export_dir: str,
+    texture_ext: str,
+    game_profile: str,
+    per_instance_custom_data: list[float] | None,
+    per_instance_tint_ids: list[int] | None,
+    material_slot_index: int,
+    verbose: bool = False,
+) -> None:
+    """Mindseye MI-json extras.
+
+    Adds support for packed ORM stored under the exact key 'Mask' in mi['Textures'].
+
+    Channel convention (Mindseye):
+    - R: Ambient Occlusion (AO)
+    - G: Roughness
+    - B: Metallic
+
+    AO is multiplied into Base Color (Principled has no AO input).
+    """
+    tex_dict = mi.get("Textures") or {}
+    if not isinstance(tex_dict, dict):
+        return
+
+    mask_obj = tex_dict.get("Mask")
+    if not mask_obj:
+        return
+
+    img = load_image_for_objectpath(mask_obj)
+
+    # If the direct path load fails, try a basename search in the export dir.
+    # This helps when the export used a different folder remap but kept the same asset name.
+    if not img:
+        base = mask_obj.rsplit('.', 1)[-1] if '.' in mask_obj else mask_obj.split('/')[-1]
+        base = base.split("'")[-1]  # strip Unreal quoting if present
+        base = base.split("/")[-1]
+        # Try common texture extensions; texture_ext is preferred first.
+        exts = []
+        if texture_ext:
+            exts.append(texture_ext)
+        for e in (".png", ".tga", ".jpg", ".jpeg", ".dds"):
+            if e not in exts:
+                exts.append(e)
+
+        found_path = None
+        for e in exts:
+            # search anywhere under export_dir for a matching filename
+            for p in pathlib.Path(export_dir).rglob(base + e):
+                found_path = str(p)
+                break
+            if found_path:
+                break
+
+        if found_path:
+            try:
+                img = bpy.data.images.load(found_path, check_existing=True)
+            except Exception:
+                img = None
+
+    if not img:
+        # Still create the nodes so you can SEE the missing Mask binding in the graph.
+        if verbose:
+            print(f"[umodel_tools] Mindseye: missing Mask/ORM texture file for {material.name}: {mask_obj}")
+
+    material.use_nodes = True
+    nt = material.node_tree
+    nodes = nt.nodes
+    links = nt.links
+
+    # Find Principled BSDF
+    bsdf = None
+    for n in nodes:
+        if n.type == "BSDF_PRINCIPLED":
+            bsdf = n
+            break
+    if not bsdf:
+        return
+
+    # Create nodes
+    # Place them somewhat left of the BSDF if possible
+    bx, by = bsdf.location
+    img_node = nodes.new("ShaderNodeTexImage")
+    img_node.location = (bx - 650, by - 380)
+    img_node.image = img
+    img_node.label = "Mask (ORM)" if img else "Mask (ORM) [MISSING]"
+    img_node.name = "Mask_ORM"
+    img_node.image.colorspace_settings.name = "Non-Color"
+
+    sep = nodes.new("ShaderNodeSeparateRGB")
+    sep.location = (bx - 420, by - 380)
+
+    # Roughness / Metallic
+    try:
+        links.new(img_node.outputs["Color"], sep.inputs["Image"])
+    except Exception:
+        # Some Blender versions use 'Image' vs 'Color' names inconsistently, try both
+        if "Color" in img_node.outputs and "Image" in sep.inputs:
+            links.new(img_node.outputs["Color"], sep.inputs["Image"])
+
+    if "G" in sep.outputs and "Roughness" in bsdf.inputs:
+        links.new(sep.outputs["G"], bsdf.inputs["Roughness"])
+    if "B" in sep.outputs and "Metallic" in bsdf.inputs:
+        links.new(sep.outputs["B"], bsdf.inputs["Metallic"])
+
+    # AO -> multiply into base color
+    # Capture the existing base color source (if any)
+    base_in = bsdf.inputs.get("Base Color")
+    if not base_in:
+        return
+
+    existing_link = base_in.links[0] if base_in.is_linked and base_in.links else None
+
+    # Build AO as grayscale color
+    comb = nodes.new("ShaderNodeCombineRGB")
+    comb.location = (bx - 230, by - 560)
+    if "R" in sep.outputs:
+        links.new(sep.outputs["R"], comb.inputs["R"])
+        links.new(sep.outputs["R"], comb.inputs["G"])
+        links.new(sep.outputs["R"], comb.inputs["B"])
+
+    mult = nodes.new("ShaderNodeMixRGB")
+    mult.blend_type = "MULTIPLY"
+    mult.inputs["Fac"].default_value = 1.0
+    mult.location = (bx - 10, by - 280)
+
+    # Wire multiply:
+    # Color1 = existing base color (or white if none)
+    # Color2 = AO grayscale
+    links.new(comb.outputs["Image"], mult.inputs["Color2"])
+
+    if existing_link:
+        # Disconnect existing
+        from_sock = existing_link.from_socket
+        links.remove(existing_link)
+        links.new(from_sock, mult.inputs["Color1"])
+    else:
+        # Use bsdf default base color as Color1
+        rgb = nodes.new("ShaderNodeRGB")
+        rgb.location = (bx - 230, by - 280)
+        rgb.outputs["Color"].default_value = base_in.default_value
+        links.new(rgb.outputs["Color"], mult.inputs["Color1"])
+
+    links.new(mult.outputs["Color"], base_in)
