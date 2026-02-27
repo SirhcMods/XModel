@@ -184,16 +184,33 @@ class AssetImporter:
 
         material_desc_path_no_ext = os.path.join(umodel_export_dir, material_path_local_no_ext)
 
+        print(f"[DBG] _import_material_to_library CALLED material_name={material_name} "
+            f"path_no_ext={material_desc_path_no_ext}")
+
+        props_path = material_desc_path_no_ext + '.props.txt'
+        json_path  = material_desc_path_no_ext + '.json'
+ 
+        print(f"[DBG] descriptor exists? props={os.path.isfile(props_path)} json={os.path.isfile(json_path)} "
+            f"props_path={props_path} json_path={json_path}")
+
         # load texture infos from a supported descriptor format.
         # pylint: disable=unpacking-non-sequence
-        if os.path.isfile(material_desc_path_no_ext + '.props.txt'):
+        if os.path.isfile(props_path):
             desc_ast, texture_infos, base_prop_overrides = props_txt_parser.parse_props_txt(
-                material_desc_path_no_ext + '.props.txt',
+                props_path,
                 mode='MATERIAL'
             )
-        elif os.path.isfile(material_desc_path_no_ext + '.json'):
+
+            # If props exists but has no textures, try json too
+            if (not texture_infos) and os.path.isfile(json_path):
+                utils.verbose_print(f'[MAT DESC] props had 0 textures -> using json: {json_path}')
+                desc_ast, texture_infos, base_prop_overrides = fmodel_json_parser.parse_fmodel_json(
+                json_path,
+                mode='MATERIAL'
+            )
+        elif os.path.isfile(json_path):
             desc_ast, texture_infos, base_prop_overrides = fmodel_json_parser.parse_fmodel_json(
-                material_desc_path_no_ext + '.json',
+                json_path,
                 mode='MATERIAL'
             )
         else:
@@ -417,6 +434,7 @@ class AssetImporter:
         new_materials = []
 
         # - read material descriptor file and identify associated materials
+        mat_descriptors_paths: list[str] = []
         try:
             # pylint: disable=unpacking-non-sequence
             if os.path.isfile(asset_psk_path_noext + '.props.txt'):
@@ -430,49 +448,50 @@ class AssetImporter:
         except OSError:
             self._warn_print(f"Warning: Loading material descriptor {asset_psk_path_noext + '.props.txt/.json'} failed. "
                              "Materials will not be avaialble for the imported object.")
-        else:
-            # attempt to obtain materials manually if descriptor is not available
-            mat_desc_order_map = {mat.name: None for mat in obj.data.materials}
+        # attempt to obtain materials manually if descriptor is not available
+        mat_desc_order_map = {mat.name: None for mat in obj.data.materials}
 
-            if animated and not mat_descriptors_paths:
-                if os.path.isdir(mat_dir := os.path.join(os.path.dirname(psk_path), 'Materials')):
-                    for root, _, files in os.walk(mat_dir):
-                        for file in files:
-                            if file.endswith('.props.txt'):
-                                file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
-                            elif file.endswith('.json'):
-                                file_abs = os.path.splitext(os.path.join(root, file))[0]
-                            else:
-                                continue
-                            mat_name = os.path.basename(file_abs)
+        if animated and not mat_descriptors_paths:
+            if os.path.isdir(mat_dir := os.path.join(os.path.dirname(psk_path), 'Materials')):
+                for root, _, files in os.walk(mat_dir):
+                    for file in files:
+                        if file.endswith('.props.txt'):
+                            file_abs = os.path.splitext(os.path.splitext(os.path.join(root, file))[0])[0]
+                        elif file.endswith('.json'):
+                            file_abs = os.path.splitext(os.path.join(root, file))[0]
+                        else:
+                            continue
+                        mat_name = os.path.basename(file_abs)
 
-                            if mat_name not in mat_desc_order_map:
-                                self._warn_print(f"Warning: Found extra material {mat_name} in the Materials dir. "
-                                                 "It won't be imported.")
-                                continue
+                        if mat_name not in mat_desc_order_map:
+                            self._warn_print(f"Warning: Found extra material {mat_name} in the Materials dir. "
+                                             "It won't be imported.")
+                            continue
 
-                            mat_desc_order_map[mat_name] = f"{os.path.relpath(file_abs, umodel_export_dir)}.{mat_name}"
+                        mat_desc_order_map[mat_name] = f"{os.path.relpath(file_abs, umodel_export_dir)}.{mat_name}"
 
-                    if any(mat_desc is None for mat_desc in mat_desc_order_map.values()):
-                        print(f"Warning: Material count mismatch for asset \"{obj.name}\".")
-                        mesh = obj.data
+                if any(mat_desc is None for mat_desc in mat_desc_order_map.values()):
+                    print(f"Warning: Material count mismatch for asset \"{obj.name}\".")
+                    mesh = obj.data
 
-                        bpy.data.objects.remove(obj, do_unlink=True)
-                        bpy.data.meshes.remove(mesh, do_unlink=True)
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                    bpy.data.meshes.remove(mesh, do_unlink=True)
 
-                        old_materials = list(mesh.materials)
+                    old_materials = list(mesh.materials)
 
-                        # perform cleanup before raising
-                        for mat in old_materials:
-                            try:
-                                bpy.data.materials.remove(mat, do_unlink=True)
-                            except ReferenceError:  # TODO: figure out why?
-                                pass
+                    # perform cleanup before raising
+                    for mat in old_materials:
+                        try:
+                            bpy.data.materials.remove(mat, do_unlink=True)
+                        except ReferenceError:  # TODO: figure out why?
+                            pass
 
-                        raise FileNotFoundError()
+                    raise FileNotFoundError()
 
-                    mat_descriptors_paths = list(mat_desc_order_map.values())
+                mat_descriptors_paths = list(mat_desc_order_map.values())
+            
 
+        if mat_descriptors_paths:
             # replace materials
             old_materials = list(obj.data.materials)
 
@@ -532,6 +551,7 @@ class AssetImporter:
                     bpy.data.materials.remove(mat, do_unlink=True)
                 except ReferenceError:  # TODO: figure out why?
                     pass
+
 
         # obj.asset_generate_preview()
 

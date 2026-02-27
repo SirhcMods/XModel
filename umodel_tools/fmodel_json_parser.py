@@ -87,10 +87,22 @@ def _normalize_object_path(path: str) -> str:
 
 
 def _get_material_paths(data: t.Any) -> list[str]:
-    material_paths = []
+    """Return material descriptor paths for a StaticMesh export.
+
+    AssetImporter expects each entry in the form:
+        /Some/Unreal/Path/MI_Name.MI_Name
+    where the left side is the descriptor path (no extension) and the right side
+    is the material slot name (MI_*).
+    """
+    material_paths: list[str] = []
 
     for export in _iter_exports(data):
+        # FModel "object properties" json nests StaticMaterials under Properties
         static_materials = export.get('StaticMaterials')
+        if not isinstance(static_materials, list):
+            props = export.get('Properties')
+            if isinstance(props, dict):
+                static_materials = props.get('StaticMaterials')
 
         if not isinstance(static_materials, list):
             continue
@@ -102,18 +114,63 @@ def _get_material_paths(data: t.Any) -> list[str]:
             mat_interface = static_material.get('MaterialInterface', static_material)
             material_path = _extract_object_path(mat_interface)
 
-            if material_path is not None:
-                material_paths.append(material_path)
+            if not isinstance(material_path, str) or not material_path:
+                continue
+
+            # Strip trailing ".<digits>" (e.g. ".0") that FModel appends.
+            left, dot, right = material_path.rpartition('.')
+            if dot and right.isdigit():
+                material_path = left
+
+            material_name = material_path.rsplit('/', 1)[-1]
+            if not material_name:
+                continue
+
+            material_paths.append(f"{material_path}.{material_name}")
 
     return material_paths
+def _strip_unreal_duplicate_suffix(path: str) -> str:
+    # /Path/T_Name.T_Name -> /Path/T_Name
+    head, sep, tail = path.rpartition('.')
+    if not sep:
+        return path
+    last_segment = head.rsplit('/', 1)[-1]
+    return head if tail == last_segment else path
 
 
 def _get_texture_infos(data: t.Any) -> dict[str, str]:
-    texture_infos = {}
+    texture_infos: dict[str, str] = {}
 
     for export in _iter_exports(data):
-        tex_param_values = export.get('TextureParameterValues')
+        props = export.get("Properties")
+        src = props if isinstance(props, dict) else export
 
+        tex_param_values = src.get("TextureParameterValues")
+        used_key = "TextureParameterValues"
+
+        if not isinstance(tex_param_values, list):
+            tex_param_values = src.get("Textures")
+            used_key = "Textures"
+
+        utils.verbose_print(
+            f"[FModel MATERIAL] keys={list(src.keys())[:25]} "
+            f"picked={used_key} type={type(tex_param_values).__name__}"
+        )
+
+        # New format: "Textures": { "BaseLayer_BaseColor": "/Path/T.T", ... }
+        if used_key == "Textures" and isinstance(tex_param_values, dict):
+            for param_name, raw_path in tex_param_values.items():
+                if not isinstance(param_name, str):
+                    continue
+                if isinstance(raw_path, str) and raw_path:
+                    texture_infos[param_name] = _strip_unreal_duplicate_suffix(raw_path)
+                elif isinstance(raw_path, dict):
+                    tex_path = _extract_object_path(raw_path)
+                    if tex_path:
+                        texture_infos[param_name] = _strip_unreal_duplicate_suffix(tex_path)
+            continue
+
+        # Old format: list of dicts with ParameterInfo/ParameterValue
         if not isinstance(tex_param_values, list):
             continue
 
@@ -121,24 +178,27 @@ def _get_texture_infos(data: t.Any) -> dict[str, str]:
             if not isinstance(tex_param, dict):
                 continue
 
-            tex_path = _extract_object_path(tex_param.get('ParameterValue'))
-
+            tex_path = _extract_object_path(tex_param.get("ParameterValue"))
             if tex_path is None:
                 continue
 
             param_name = None
-            if isinstance((param_info := tex_param.get('ParameterInfo')), dict):
-                if isinstance((name := param_info.get('Name')), str):
+            if isinstance((param_info := tex_param.get("ParameterInfo")), dict):
+                if isinstance((name := param_info.get("Name")), str):
                     param_name = name
 
-            if param_name is None and isinstance((name := tex_param.get('ParameterName')), str):
+            if param_name is None and isinstance((name := tex_param.get("ParameterName")), str):
                 param_name = name
 
             if param_name is None:
                 continue
 
-            texture_infos[param_name] = tex_path
+            texture_infos[param_name] = _strip_unreal_duplicate_suffix(tex_path)
 
+    utils.verbose_print(
+        f"[FModel MATERIAL] total textures extracted: {len(texture_infos)} "
+        f"sample={list(texture_infos.items())[:5]}"
+    )
     return texture_infos
 
 
