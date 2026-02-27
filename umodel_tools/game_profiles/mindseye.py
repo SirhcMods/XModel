@@ -117,6 +117,9 @@ def handle_material_texture_pbr(mat: bpy.types.Material,
             mat_ctx.diffuse_connected = True
 
         case TextureMapTypes.Normal:
+            if img_node.image and img_node.image.library is not None:
+                img_node.image.make_local()
+                img_node.image.colorspace_settings.is_data = True
             normal_map_node = mat.node_tree.nodes.new('ShaderNodeNormalMap')
             mat.node_tree.links.new(img_node.outputs['Color'], normal_map_node.inputs['Color'])
             mat.node_tree.links.new(normal_map_node.outputs['Normal'], bsdf_node.inputs['Normal'])
@@ -147,17 +150,5 @@ def handle_material_texture_simple(mat: bpy.types.Material,
     img_node.select = True
     mat.node_tree.nodes.active = img_node
 
-
 def end_process_material(mat: bpy.types.Material):
-    mat_ctx = _state_buffer[mat]
-
-    # Avoid hard-coded socket indices (they vary between Blender versions)
-    if mat_ctx.use_pbr and mat_ctx.bsdf_node is not None:
-        bsdf = mat_ctx.bsdf_node
-        if (sock := bsdf.inputs.get('Roughness')) is not None:
-            try:
-                sock.default_value = 0.0
-            except Exception:  # pylint: disable=broad-except
-                pass
-
     del _state_buffer[mat]
