@@ -3,14 +3,18 @@ import math
 import os
 import typing as t
 import enum
+import re
+import functools
 
 import mathutils as mu
 import bpy
 import tqdm
 
 from . import asset_db
+from .ops import override_materials as override_ops
 from . import asset_importer
 from . import utils
+from . import fmodel_json_parser
 
 
 def split_object_path(object_path):
@@ -25,6 +29,117 @@ def split_object_path(object_path):
 
     # Nothing to do
     return object_path
+
+
+_RE_TRAILING_OBJPATH_DOTNUM = re.compile(r"\.(\d+)$")  # ends with .0/.1/etc
+
+
+def strip_objectpath_trailing_dotnum(object_path: str) -> str:
+    """Strip trailing ".<digits>" from UE ObjectPath while preserving inner periods."""
+    if not object_path:
+        return object_path
+    m = _RE_TRAILING_OBJPATH_DOTNUM.search(object_path)
+    if m:
+        return object_path[:m.start()]
+    return object_path
+
+
+def strip_ue_quoted_name(s: str) -> str:
+    """Extract the inner name from UE formatted ObjectName strings.
+
+    Examples:
+      "MaterialInstanceConstant'MI_Name'" -> "MI_Name"
+      "StaticMesh'SM_Foo'" -> "SM_Foo"
+    """
+    if not s:
+        return ""
+    if "'" in s:
+        parts = s.split("'")
+        if len(parts) >= 2:
+            return parts[1].strip()
+    return s.strip()
+
+
+def _extract_ref_path(value: t.Any) -> str:
+    """Extract an Unreal-style object path from common FModel reference shapes."""
+    if not value:
+        return ""
+
+    # Prefer the parser's normalization / common-case extraction.
+    try:
+        p = fmodel_json_parser._extract_object_path(value)  # type: ignore[attr-defined]
+    except Exception:
+        p = None
+    if isinstance(p, str) and p:
+        return p
+
+    # Extra nested cases seen in some exports.
+    if isinstance(value, dict):
+        op = value.get("ObjectPath")
+        if isinstance(op, dict):
+            apn = op.get("AssetPathName")
+            if isinstance(apn, str) and apn:
+                try:
+                    return fmodel_json_parser._normalize_object_path(apn)  # type: ignore[attr-defined]
+                except Exception:
+                    return apn
+        apn = value.get("AssetPathName")
+        if isinstance(apn, str) and apn:
+            try:
+                return fmodel_json_parser._normalize_object_path(apn)  # type: ignore[attr-defined]
+            except Exception:
+                return apn
+
+    return ""
+
+
+def _extract_ref_name(value: t.Any) -> str:
+    """Extract the short asset name (MI_*, SM_*) from common FModel reference shapes."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return strip_ue_quoted_name(value)
+
+    if isinstance(value, dict):
+        for k in ("ObjectName", "Name", "AssetName"):
+            v = value.get(k)
+            if isinstance(v, str) and v:
+                return strip_ue_quoted_name(v)
+
+        # If only a path is present, derive the name.
+        p = _extract_ref_path(value)
+        if p:
+            p2 = strip_objectpath_trailing_dotnum(p)
+            return p2.rsplit('/', 1)[-1]
+
+    return ""
+
+
+def _timer_post_import_reload_and_reapply(collection_name: str,
+                                         umodel_export_dir: str,
+                                         asset_dir: str,
+                                         game_profile: str,
+                                         apply_override_materials: bool = True) -> t.Optional[float]:
+    """Timer callback to reload libraries and re-apply OverrideMaterials.
+
+    IMPORTANT: This must NOT capture an operator instance.
+    Some call sites execute MapImporter methods on a bpy.types.Operator subclass via
+    multiple inheritance. Blender frees operator StructRNA right after execution, and
+    timer callbacks would crash if they reference `self`.
+    """
+    try:
+        helper = MapImporter()
+        return helper._post_import_reload_and_reapply(
+            collection_name,
+            umodel_export_dir,
+            asset_dir,
+            game_profile,
+            apply_override_materials=apply_override_materials
+        )
+    except Exception as e:
+        # Don't crash the timer loop; just log.
+        utils.verbose_print(f"OverrideMaterials post-import timer failed: {e}")
+        return None
 
 
 def parse_ue_object_name(obj_name: str) -> tuple[str, str, str]:
@@ -117,6 +232,10 @@ class StaticMesh:
     instance_transforms: list[InstanceTransform]
     parent_mtx: t.Optional[mu.Matrix] = None
 
+    # Per-component material overrides (slot-index aligned):
+    # list entries are either None (no override) or (material_name, material_object_path)
+    override_materials: t.Optional[list[t.Optional[tuple[str, str]]]] = None
+
     # these are just properties to help with debugging
     no_entity: bool = False
     no_mesh: bool = False
@@ -135,6 +254,22 @@ class StaticMesh:
             self.no_entity = True
             return
 
+        # Capture per-component OverrideMaterials (if any). This is per-instance data.
+        self.override_materials = None
+        if (override_list := props.get("OverrideMaterials", None)) is not None and isinstance(override_list, list):
+            norm: list[t.Optional[tuple[str, str]]] = []
+            for entry in override_list:
+                if entry is None or not isinstance(entry, dict):
+                    norm.append(None)
+                    continue
+                mat_name = strip_ue_quoted_name(entry.get("ObjectName", ""))
+                mat_path = entry.get("ObjectPath", "")
+                if not mat_name or not mat_path:
+                    norm.append(None)
+                    continue
+                norm.append((mat_name, mat_path))
+            self.override_materials = norm
+
         if not props.get("StaticMesh", None):
             self.no_mesh = True
             return
@@ -142,6 +277,11 @@ class StaticMesh:
         if not (object_path := props.get("StaticMesh").get("ObjectPath", None)) or object_path == '':
             self.no_path = True
             return
+
+        # Keep original object path around so we can reconstruct base materials later if
+        # Blender reload wipes linked slot pointers.
+        # Example: "/MindsEye/Content/.../SM_Foo.0"
+        self.mesh_object_path = object_path
 
         if 'BasicShapes' in object_path:
             # What is a BasicShape? Do we need these?
@@ -226,8 +366,13 @@ class StaticMesh:
                 or self.not_rendered or self.invisible)
 
     def link_object_instance(self,
+                             importer: "MapImporter",
                              obj: bpy.types.Object,
-                             collection: bpy.types.Collection) -> list[bpy.types.Object]:
+                             collection: bpy.types.Collection,
+                             umodel_export_dir: str,
+                             asset_dir: str,
+                             game_profile: str,
+                             db: t.Optional[asset_db.AssetDB] = None) -> list[bpy.types.Object]:
         if self.invalid:
             print(f'Refusing to import {self.entity_name} due to failed checks.')
             return []
@@ -241,16 +386,48 @@ class StaticMesh:
                 new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
                 new_obj.rotation_mode = 'XYZ'
 
+                # Persist mesh object path for base-material reconstruction.
+                try:
+                    new_obj["_umodel_mesh_object_path"] = getattr(self, "mesh_object_path", "")
+                except Exception:
+                    pass
+
                 if self.parent_mtx is None:
                     new_obj.matrix_world = mat_world
                 else:
                     new_obj.matrix_world = self.parent_mtx @ mat_world
 
                 collection.objects.link(new_obj)
+                # Persist base slot names/material names for post-reload repair.
+                importer._persist_base_material_slots(new_obj)
+                # Some meshes arrive with blank/nameless slots even without OverrideMaterials so we repair them
+                importer._repair_base_material_slots(
+                    new_obj,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=game_profile,
+                    db=db,
+                    force_reassign=True
+                )
+                if getattr(importer, 'apply_override_materials', True):
+                                    importer._apply_override_materials_to_object(
+                                        new_obj,
+                                        self.override_materials,
+                                        umodel_export_dir=umodel_export_dir,
+                                        asset_dir=asset_dir,
+                                        game_profile=game_profile,
+                                        db=db
+                                    )
                 objects.append(new_obj)
 
         else:
             new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
+
+            # Persist mesh object path for base-material reconstruction.
+            try:
+                new_obj["_umodel_mesh_object_path"] = getattr(self, "mesh_object_path", "")
+            except Exception:
+                pass
 
             if self.parent_mtx is None:
                 new_obj.scale = (trs.scale[0], trs.scale[1], trs.scale[2])
@@ -261,6 +438,25 @@ class StaticMesh:
                 new_obj.matrix_world = self.parent_mtx @ trs.matrix_4x4
 
             collection.objects.link(new_obj)
+            # Persist base slot names/material names for post-reload repair.
+            importer._persist_base_material_slots(new_obj)
+            importer._repair_base_material_slots(
+                new_obj,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=game_profile,
+                db=db,
+                force_reassign=True
+            )
+            if getattr(importer, 'apply_override_materials', True):
+                            importer._apply_override_materials_to_object(
+                                new_obj,
+                                self.override_materials,
+                                umodel_export_dir=umodel_export_dir,
+                                asset_dir=asset_dir,
+                                game_profile=game_profile,
+                                db=db
+                            )
             objects.append(new_obj)
 
         return objects
@@ -585,10 +781,532 @@ class MapImporter(asset_importer.AssetImporter):
     """Imports Unreal Engine map (FModel .json output). Assets are imported from UModel output directory.
     """
 
-    @staticmethod
-    def _library_reload():
+    apply_override_materials: bpy.props.BoolProperty(
+        name="Use OverrideMaterials from UMAP",
+        description="Apply per-component OverrideMaterials from UMAP JSON",
+        default=False
+    )
+
+    def _encode_override_materials(self, override_materials: t.Optional[list[t.Optional[tuple[str, str]]]]) -> str:
+        return override_ops.encode_override_materials(override_materials)
+
+    def _decode_override_materials(self, s: str) -> t.Optional[list[t.Optional[tuple[str, str]]]]:
+        return override_ops.decode_override_materials(s)
+
+    def _encode_base_material_slots(self, obj: bpy.types.Object) -> str:
+        """Encode current per-object material slot names + material names.
+
+        This is used to repair rare cases where Blender library reload invalidates
+        some slot pointers and/or slot names.
+
+        We intentionally do NOT store ObjectPaths here because base materials are
+        already imported/linked by the normal mesh pipeline. The repair pass simply
+        re-assigns by name if the material datablock exists.
+        """
+        try:
+            slots = []
+            for slot in obj.material_slots:
+                slots.append({
+                    "sn": slot.name or "",
+                    "mn": slot.material.name if slot.material else ""
+                })
+            return json.dumps(slots, ensure_ascii=False)
+        except Exception:
+            return "[]"
+
+    def _decode_base_material_slots(self, s: str) -> t.Optional[list[dict[str, str]]]:
+        if not s:
+            return None
+        try:
+            arr = json.loads(s)
+        except Exception:
+            return None
+        if not isinstance(arr, list):
+            return None
+        out: list[dict[str, str]] = []
+        for entry in arr:
+            if isinstance(entry, dict):
+                out.append({
+                    "sn": str(entry.get("sn", "")) if entry.get("sn", "") is not None else "",
+                    "mn": str(entry.get("mn", "")) if entry.get("mn", "") is not None else "",
+                })
+        return out
+
+    def _load_base_slots_from_mesh_json(self,
+                                       obj: bpy.types.Object,
+                                       umodel_export_dir: str,
+                                       asset_dir: str,
+                                       game_profile: str,
+                                       db: t.Optional[asset_db.AssetDB] = None
+                                       ) -> t.Optional[list[dict[str, str]]]:
+        """Fallback: reconstruct base slots from the mesh JSON's StaticMaterials.
+
+        This handles rare meshes where Blender reload wipes linked material slot pointers
+        and we did not successfully persist base slot info during instance creation.
+
+        Returns list entries: {"si": slot_index, "sn": slot_name, "mn": material_name, "op": material_object_path}
+        """
+        try:
+            mesh_objpath = obj.get("_umodel_mesh_object_path", "")
+            if not mesh_objpath:
+                return None
+
+            mesh_objpath = strip_objectpath_trailing_dotnum(str(mesh_objpath))
+            rel = os.path.normpath(str(mesh_objpath).lstrip('/'))
+            json_path = os.path.join(umodel_export_dir, rel) + ".json"
+            if not os.path.isfile(json_path):
+                return None
+
+            with open(json_path, mode='r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # FModel mesh exports are not always a single dict.
+            # Some exports are a list of objects, where the useful data lives under
+            # entry["Properties"]["StaticMaterials"].
+            static_mats = None
+            if isinstance(data, dict):
+                static_mats = data.get("StaticMaterials", None)
+                if not isinstance(static_mats, list):
+                    props = data.get("Properties")
+                    if isinstance(props, dict):
+                        static_mats = props.get("StaticMaterials")
+            elif isinstance(data, list):
+                for ent in data:
+                    if not isinstance(ent, dict):
+                        continue
+                    props = ent.get("Properties")
+                    if not isinstance(props, dict):
+                        continue
+                    sm = props.get("StaticMaterials")
+                    if isinstance(sm, list) and sm:
+                        static_mats = sm
+                        break
+
+            if not isinstance(static_mats, list) or not static_mats:
+                return None
+
+            out: list[dict[str, str]] = []
+            for sm in static_mats:
+                if not isinstance(sm, dict):
+                    continue
+                mi = sm.get("MaterialInterface", None)
+                mat_name = ""
+                mat_op = ""
+                if isinstance(mi, dict) or isinstance(mi, str):
+                    mat_name = _extract_ref_name(mi)
+                    mat_op = _extract_ref_path(mi)
+
+                # Some exports omit/garble ObjectName but include ObjectPath.
+                # Derive the name from the path in that case.
+                if not mat_name and mat_op:
+                    mat_name = strip_objectpath_trailing_dotnum(mat_op).rsplit('/', 1)[-1]
+
+                # Normalize ObjectPath by stripping trailing .<digits>
+                if mat_op:
+                    mat_op = strip_objectpath_trailing_dotnum(mat_op)
+
+                # NOTE:
+                # In UE/FModel exports, MaterialSlotName is a *name*, not a guaranteed dense index.
+                # It's very common to see names like "0" and "16" even when the mesh has only
+                # two slots (array order defines indices 0..N-1). Treat the JSON list order as
+                # the authoritative slot index for Blender assignment.
+                slot_name = sm.get("MaterialSlotName", "") or sm.get("ImportedMaterialSlotName", "") or ""
+
+                out.append({
+                    # Keep "si" empty so repair uses sequential order.
+                    "si": "",
+                    "sn": str(slot_name) if slot_name is not None else "",
+                    "mn": str(mat_name) if mat_name is not None else "",
+                    "op": str(mat_op) if mat_op is not None else "",
+                })
+
+
+            # Ensure base materials exist/are linked so repair can assign them.
+            for e in out:
+                mn = e.get("mn", "")
+                op = e.get("op", "")
+                if not mn or not op:
+                    continue
+                if bpy.data.materials.get(mn) is not None:
+                    continue
+
+                # If Blender already has MI_Name.### because of name collisions,
+                # prefer reusing that instead of importing/linking a new one.
+                alt = None
+                prefix = mn + "."
+                for m in bpy.data.materials:
+                    if m.name.startswith(prefix) and m.name[len(prefix):].isdigit():
+                        alt = m
+                        break
+                if alt is not None:
+                    continue
+                self._get_or_link_material_from_objectpath(
+                    material_name=mn,
+                    material_object_path=op,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=game_profile,
+                    db=db
+                )
+
+            return out
+        except Exception:
+            return None
+
+    def _persist_base_material_slots(self, obj: bpy.types.Object) -> None:
+        """Store base slot names/material names once per object.
+
+        We try to persist from the current slots first. If the slots are present but
+        effectively blank (no names, no materials), we attempt a JSON fallback to avoid
+        persisting useless data.
+        """
+        if obj.type != "MESH":
+            return
+        if obj.get("_umodel_base_material_slots", ""):
+            return
+        if len(obj.material_slots) == 0:
+            return
+
+        encoded = self._encode_base_material_slots(obj)
+
+        # If we captured nothing useful (common symptom: all slots empty after a link/reload),
+        # try to reconstruct from mesh JSON if available.
+        try:
+            decoded = self._decode_base_material_slots(encoded) or []
+            useful = any((e.get("sn") or e.get("mn")) for e in decoded)
+        except Exception:
+            useful = True
+
+        if not useful:
+            try:
+                # We don't know the import paths here, so defer persistence; the post-reload
+                # repair step will use JSON fallback when it has paths.
+                return
+            except Exception:
+                return
+
+        obj["_umodel_base_material_slots"] = encoded
+
+    def _repair_base_material_slots(self,
+                                   obj: bpy.types.Object,
+                                   umodel_export_dir: str,
+                                   asset_dir: str,
+                                   game_profile: str,
+                                   db: t.Optional[asset_db.AssetDB] = None,
+                                   force_reassign: bool = False) -> bool:
+        """Repair wiped/blank slots.
+
+        Primary source: persisted base info captured at instance creation.
+        Fallback source: mesh JSON StaticMaterials (when persistence was not possible / was blank).
+
+        Returns True if any repair action was taken.
+        """
+        if obj.type != "MESH" or len(obj.material_slots) == 0:
+            return False
+
+        def _is_placeholder_material(mat: t.Optional[bpy.types.Material]) -> bool:
+            """Heuristic for placeholder mats/slots that should be treated as empty.
+
+            Some meshes arrive with numeric slot/material labels like "0" / "16".
+            Those are UE slot *names* and are not usable material identities in Blender.
+            Treat them as placeholders so we can replace them by the real MI_* materials.
+            """
+            if mat is None:
+                return True
+            n = (getattr(mat, "name", "") or "").strip()
+            if not n:
+                return True
+            if n.isdigit():
+                return True
+            return False
+
+        s = obj.get("_umodel_base_material_slots", "")
+        data = self._decode_base_material_slots(s) if s else None
+
+        # If persisted data is missing or useless, try JSON fallback.
+        if not data or not any((e.get("sn") or e.get("mn")) for e in data):
+            fallback = self._load_base_slots_from_mesh_json(
+                obj,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=game_profile,
+                db=db
+            )
+            if fallback:
+                utils.verbose_print(f"Base slot JSON fallback for {obj.name}: slots={len(fallback)}")
+                # Convert fallback into the same persisted format (sn/mn only) for later.
+                try:
+                    obj["_umodel_base_material_slots"] = json.dumps(
+                        [{"sn": e.get("sn", ""), "mn": e.get("mn", "")} for e in fallback],
+                        ensure_ascii=False
+                    )
+                except Exception:
+                    pass
+                # For repair we want object paths too.
+                data_with_paths = fallback
+            else:
+                # If the object has blank slots and we can't find JSON, log it.
+                try:
+                    mesh_objpath = obj.get("_umodel_mesh_object_path", "")
+                    mesh_objpath = strip_objectpath_trailing_dotnum(str(mesh_objpath)) if mesh_objpath else ""
+                    rel = os.path.normpath(str(mesh_objpath).lstrip('/')) if mesh_objpath else ""
+                    json_path = (os.path.join(umodel_export_dir, rel) + ".json") if rel else ""
+                    utils.verbose_print(
+                        f"Base slot repair failed for {obj.name}: no persisted slots and no JSON fallback "
+                        f"(mesh_objpath={mesh_objpath!r}, json_exists={os.path.isfile(json_path) if json_path else False})"
+                    )
+                except Exception:
+                    pass
+                return False
+        else:
+            data_with_paths = None
+
+        # If nothing looks broken and we aren't forcing, skip.
+        if (not force_reassign and
+                not any((slot.material is None) or (not slot.name) or _is_placeholder_material(slot.material)
+                        for slot in obj.material_slots)):
+            return False
+
+        repaired = False
+
+        # Use per-object slots so we can fix without touching shared mesh datablocks.
+        self._ensure_object_slot_overrides(obj)
+
+        entries = (data_with_paths if data_with_paths is not None else (data or []))
+
+        # Assign strictly by sequential order.
+        # MaterialSlotName in UE/FModel exports is a name string and can look numeric ("0", "16", etc.)
+        # even when the mesh only has N slots in array order.
+        for seq_i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+
+            desired_sn = entry.get("sn", "")
+            desired_mn = entry.get("mn", "")
+            desired_op = entry.get("op", "")
+
+            slot_i = seq_i
+
+            if slot_i < 0 or slot_i >= len(obj.material_slots):
+                continue
+
+            slot = obj.material_slots[slot_i]
+
+            # Don't pollute Blender slot labels with numeric-only UE slot labels.
+            if desired_sn and not slot.name and not str(desired_sn).strip().isdigit():
+                try:
+                    slot.name = desired_sn
+                    repaired = True
+                except Exception:
+                    pass
+
+            # If forced, always assign. Otherwise only replace empty/placeholder.
+            should_assign = bool(desired_mn) and (force_reassign or _is_placeholder_material(slot.material))
+            if should_assign:
+                mat = bpy.data.materials.get(desired_mn)
+                if mat is None:
+                    # Blender may have auto-suffixed the name (MI_Name.###)
+                    prefix = desired_mn + "."
+                    for m in bpy.data.materials:
+                        if m.name.startswith(prefix) and m.name[len(prefix):].isdigit():
+                            mat = m
+                            break
+                if mat is None and desired_op:
+                    mat = self._get_or_link_material_from_objectpath(
+                        material_name=desired_mn,
+                        material_object_path=desired_op,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=game_profile,
+                        db=db
+                    )
+                if mat is not None:
+                    slot.material = mat
+                    repaired = True
+        if repaired:
+            # If any slot is still blank, report it for debugging.
+            still_blank = sum(1 for s in obj.material_slots if (s.material is None) or (not s.name))
+            if still_blank:
+                utils.verbose_print(f"Base slot repair incomplete for {obj.name}: still_blank={still_blank}")
+
+                try:
+                    want = [e.get('mn', '') for e in entries[:len(obj.material_slots)] if isinstance(e, dict)]
+                    have = [(s.name, getattr(s.material, 'name', None)) for s in obj.material_slots]
+                    utils.verbose_print(f"  wanted_mats={want}")
+                    utils.verbose_print(f"  have_slots={have}")
+                except Exception:
+                    pass
+
+        return repaired
+
+    def _post_import_reload_and_reapply(self,
+                                       collection_name: str,
+                                       umodel_export_dir: str,
+                                       asset_dir: str,
+                                       game_profile: str,
+                                       apply_override_materials: bool = True) -> t.Optional[float]:
+        """Reload linked libraries and re-apply per-object OverrideMaterials.
+
+        Blender library reload can invalidate some linked material pointers on some objects.
+        We persist each object's override list in a custom property, and re-apply after reload
+        to eliminate the 'blank slot' cases.
+        """
+        # 1) Reload all linked libraries (existing addon behavior)
         for lib in bpy.data.libraries:
-            lib.reload()
+            try:
+                lib.reload()
+            except Exception:
+                pass
+
+        # 2) Re-apply overrides for objects that recorded them
+        coll = bpy.data.collections.get(collection_name)
+        if coll is None:
+            return None
+
+        def _iter_objects_recursive(c: bpy.types.Collection):
+            for o in c.objects:
+                yield o
+            for cc in c.children:
+                yield from _iter_objects_recursive(cc)
+
+        if apply_override_materials:
+                    reapplied = 0
+                    for obj in _iter_objects_recursive(coll):
+                        # Persist base slots before reload may wipe them.
+                        self._persist_base_material_slots(obj)
+            
+                        s = obj.get("_umodel_override_materials", "")
+                        if not s:
+                            continue
+                        overrides = self._decode_override_materials(s)
+                        if not overrides or not any(x is not None for x in overrides):
+                            continue
+                        self._apply_override_materials_to_object(
+                            obj,
+                            overrides,
+                            umodel_export_dir=umodel_export_dir,
+                            asset_dir=asset_dir,
+                            game_profile=game_profile,
+                            db=None
+                        )
+                        reapplied += 1
+            
+                    if reapplied:
+                        utils.verbose_print(f"OverrideMaterials re-applied after library reload: objects={reapplied}")
+
+        # 3) Repair base materials for objects that had no overrides but got wiped by reload.
+        repaired = 0
+        for obj in _iter_objects_recursive(coll):
+            has_overrides = False
+            try:
+                s_ov = obj.get("_umodel_override_materials", "")
+                if s_ov:
+                    ovs = self._decode_override_materials(s_ov)
+                    has_overrides = bool(ovs and any(x is not None for x in ovs))
+            except Exception:
+                has_overrides = False
+
+            if self._repair_base_material_slots(
+                obj,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=game_profile,
+                db=None,
+                # If the object has no overrides, force a full base reassign. This prevents
+                # stubborn placeholder/incorrect mats from surviving reload.
+                force_reassign=(not has_overrides)
+            ):
+                repaired += 1
+        if repaired:
+            utils.verbose_print(f"Base material slots repaired after library reload: objects={repaired}")
+
+        return None
+
+    def _get_or_link_material_from_objectpath(self,
+                                              material_name: str,
+                                              material_object_path: str,
+                                              umodel_export_dir: str,
+                                              asset_dir: str,
+                                              game_profile: str,
+                                              db: t.Optional[asset_db.AssetDB] = None
+                                              ) -> t.Optional[bpy.types.Material]:
+        return override_ops.get_or_link_material_from_objectpath(
+            importer=self,
+            material_name=material_name,
+            material_object_path=material_object_path,
+            umodel_export_dir=umodel_export_dir,
+            asset_dir=asset_dir,
+            game_profile=game_profile,
+            db=db,
+        )
+
+        # already present
+        mat = bpy.data.materials.get(material_name)
+        if mat is not None:
+            return mat
+
+        # Convert UE object path -> library relative path (no ext, strip trailing .0)
+        stripped = strip_objectpath_trailing_dotnum(material_object_path)
+        rel_no_ext = os.path.normpath(stripped.lstrip('/'))
+        material_lib_path = os.path.join(asset_dir, rel_no_ext) + ".blend"
+
+        try:
+            # Ensure the library .blend exists. If not, import it using the addon pipeline.
+            if not os.path.isfile(material_lib_path):
+                if db is None:
+                    db = asset_db.AssetDB(db_root_path=asset_dir)
+                self._import_material_to_library(
+                    material_name=material_name,
+                    material_path_local_no_ext=rel_no_ext,
+                    db=db,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_library_dir=asset_dir,
+                    game_profile=game_profile
+                )
+
+            # already linked from that library?
+            existing = utils.linked_libraries_search(material_lib_path, bpy.types.Material)
+            if existing is not None:
+                return existing
+
+            # link it
+            with utils.redirect_cstdout():
+                with bpy.data.libraries.load(filepath=material_lib_path, link=True) as (data_from, data_to):
+                    # Prefer exact name match (some .blend files may contain multiple materials)
+                    chosen_name = None
+                    for n in data_from.materials:
+                        if n == material_name:
+                            chosen_name = n
+                            break
+                    if chosen_name is None and data_from.materials:
+                        chosen_name = data_from.materials[0]
+                    data_to.materials = [chosen_name] if chosen_name else []
+
+                return data_to.materials[0] if data_to.materials else None
+
+        except Exception as e:
+            self._warn_print(f'Warning: Override material "{material_name}" failed to load: {e}')
+            return None
+
+    def _ensure_object_slot_overrides(self, obj: bpy.types.Object) -> None:
+        override_ops.ensure_object_slot_overrides(obj)
+
+    def _apply_override_materials_to_object(self,
+                                           obj: bpy.types.Object,
+                                           override_materials: t.Optional[list[t.Optional[tuple[str, str]]]],
+                                           umodel_export_dir: str,
+                                           asset_dir: str,
+                                           game_profile: str,
+                                           db: t.Optional[asset_db.AssetDB] = None) -> None:
+        return override_ops.apply_override_materials_to_object(
+            importer=self,
+            obj=obj,
+            override_materials=override_materials,
+            umodel_export_dir=umodel_export_dir,
+            asset_dir=asset_dir,
+            game_profile=game_profile,
+            db=db,
+        )
 
     def _import_map(self,
                     context: bpy.types.Context,
@@ -653,7 +1371,22 @@ class MapImporter(asset_importer.AssetImporter):
                                              "failure.")
                             continue
 
-                        static_mesh.link_object_instance(obj, import_collection)
+                        if static_mesh.override_materials and any(x is not None for x in static_mesh.override_materials):
+                            non_null = sum(1 for x in static_mesh.override_materials if x is not None)
+                            utils.verbose_print(
+                                f"OverrideMaterials detected for {static_mesh.entity_name}: "
+                                f"slots_in_override={len(static_mesh.override_materials)} non_null={non_null}"
+                            )
+
+                        static_mesh.link_object_instance(
+                            importer=self,
+                            obj=obj,
+                            collection=import_collection,
+                            umodel_export_dir=umodel_export_dir,
+                            asset_dir=asset_dir,
+                            game_profile=game_profile,
+                            db=db
+                        )
 
                     # lights
                     elif entity_type in GameLight.light_types:
@@ -667,6 +1400,16 @@ class MapImporter(asset_importer.AssetImporter):
                         light.import_light(import_collection)
 
         # TODO: required due to unknown reason, blender bug? Otherwise, some meshes have None materials.
-        bpy.app.timers.register(self._library_reload, first_interval=0.010)
+        bpy.app.timers.register(
+            functools.partial(
+                _timer_post_import_reload_and_reapply,
+                import_collection.name,
+                umodel_export_dir,
+                asset_dir,
+                game_profile,
+                getattr(self, 'apply_override_materials', True),
+            ),
+            first_interval=0.010
+        )
 
         return True

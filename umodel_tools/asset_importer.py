@@ -539,11 +539,24 @@ class AssetImporter:
 
                 new_materials.append((new_mat, material_name))
 
-            for mat, mat_name in new_materials:
-                if mat_name in obj.data.materials:
-                    obj.data.materials[obj.data.materials.find(mat_name)] = mat
-                else:
-                    obj.data.materials.append(mat)
+            # IMPORTANT:
+            # The PSK/PSKX importer may create placeholder material slots whose *names*
+            # do not match the real UE material instance names (sometimes they are
+            # numeric like "0", "16", etc.).
+            #
+            # The old logic attempted to replace by name, and when the names didn't
+            # match it appended new materials, then deleted the old placeholders.
+            # This left the original slots pointing at removed materials, producing
+            # blank/unnamed slots.
+            #
+            # Fix: assign materials strictly by slot index order.
+            # The descriptor list order is authoritative for Blender slot indices.
+
+            while len(obj.data.materials) < len(new_materials):
+                obj.data.materials.append(None)
+
+            for i, (mat, _mat_name) in enumerate(new_materials):
+                obj.data.materials[i] = mat
 
             # remove original materials
             for mat in old_materials:
