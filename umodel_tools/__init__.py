@@ -97,8 +97,6 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_umap_scan_results
     del bpy.types.Scene.umodel_umap_scan_index
 
-    del bpy.types.Scene.umodel_import_materials
-
 
 __all__ = (
     'bl_info',

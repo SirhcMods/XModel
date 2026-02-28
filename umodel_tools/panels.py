@@ -81,9 +81,6 @@ class UMODEL_PT_profile_settings(bpy.types.Panel):
 		
         layout.separator()
 
-        layout.prop(context.scene, "umodel_import_materials")
-        layout.separator()
-
         layout.operator_context = 'INVOKE_DEFAULT'
         layout.operator("umodel_tools.import_unreal_map", text="Import Unreal Map", icon='IMPORT')
 
