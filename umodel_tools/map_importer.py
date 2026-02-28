@@ -15,6 +15,7 @@ from .ops import override_materials as override_ops
 from . import asset_importer
 from . import utils
 from . import fmodel_json_parser
+from .utils import static_mesh_has_instance_in_bounds
 
 
 def split_object_path(object_path):
@@ -151,6 +152,15 @@ def parse_ue_object_name(obj_name: str) -> tuple[str, str, str]:
 
     return obj_type, names[-2], names[-1]
 
+def is_within_import_bounds(pos):
+    scene = bpy.context.scene
+    if not scene.umodel_use_vertex_bounds:
+        return True
+
+    return (
+        scene.umodel_min_x <= pos.x <= scene.umodel_max_x and
+        scene.umodel_min_y <= pos.y <= scene.umodel_max_y
+    )
 
 class InstanceTransform:
     pos: tuple[float, float, float]
@@ -1314,7 +1324,10 @@ class MapImporter(asset_importer.AssetImporter):
                     umodel_export_dir: str,
                     asset_dir: str,
                     game_profile: str,
-                    db: t.Optional[asset_db.AssetDB] = None) -> bool:
+                    db: t.Optional[asset_db.AssetDB] = None,
+                    map_index: int = 1,       # new: which map number we are importing
+                    map_total: int = 1        # new: total number of maps
+    ) -> bool:
         """Imports map placements to the current scene.
 
         :param map_path: Path to FModel .json output representing a .umap file.
@@ -1339,8 +1352,10 @@ class MapImporter(asset_importer.AssetImporter):
 
             # handle the different entity types (mehses, lights, etc)
             with utils.std_out_err_redirect_tqdm() as orig_stdout:
+                map_name = os.path.splitext(os.path.basename(map_path))[0]
+                tqdm_desc = f"[{map_index}/{map_total} B:{bpy.context.scene.umodel_use_vertex_bounds}] Importing map \"{map_name}\""
                 for entity in tqdm.tqdm(json_object,
-                                        desc=f"Importing map \"{os.path.splitext(os.path.basename(map_path))[0]}\"",
+                                        desc=tqdm_desc,
                                         file=orig_stdout,
                                         dynamic_ncols=True,
                                         ascii=True):
@@ -1356,6 +1371,8 @@ class MapImporter(asset_importer.AssetImporter):
                         if static_mesh.invalid:
                             utils.verbose_print(f"Info: Skipping instance of {static_mesh.entity_name}. "
                                                 "Invalid property.")
+                            continue
+                        if not static_mesh_has_instance_in_bounds(static_mesh):
                             continue
 
                         if (obj := self._load_asset(

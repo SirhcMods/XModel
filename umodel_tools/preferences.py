@@ -31,8 +31,8 @@ class UMODELTOOLS_PG_game_profile(bpy.types.PropertyGroup):
     )
 
     umodel_export_dir: bpy.props.StringProperty(
-        name="UModel Export Directory",
-        description="Path to the UModel export directory with game assets",
+        name="Export Directory",
+        description="Path to the export directory with game assets",
         subtype='DIR_PATH'
     )
 
@@ -148,32 +148,7 @@ class UMODELTOOLS_AP_addon_preferences(bpy.types.AddonPreferences):
 
     def draw(self, context: bpy.types.Context):
         layout = self.layout
-        layout.prop(self, "display_cur_profile")
         layout.prop(self, "verbose")
 
         if context.preferences.view.show_developer_ui:
             layout.prop(self, "debug")
-
-        layout.label(text="Game profiles:")
-        row = layout.row()
-        row.template_list("UMODELTOOLS_UL_game_profiles", "", self, "profiles", self, "active_profile_index")
-
-        col = row.column(align=True)
-        col.operator(UMODELTOOLS_OT_actions.bl_idname, icon='ADD', text="").action = 'ADD'
-        col.operator(UMODELTOOLS_OT_actions.bl_idname, icon='REMOVE', text="").action = 'REMOVE'
-
-        col.separator()
-        col.operator(UMODELTOOLS_OT_actions.bl_idname, icon='TRIA_UP', text="").action = 'UP'
-        col.operator(UMODELTOOLS_OT_actions.bl_idname, icon='TRIA_DOWN', text="").action = 'DOWN'
-
-        try:
-            game_profile = self.profiles[self.active_profile_index]
-        except IndexError:
-            pass
-        else:
-            layout.separator()
-            layout.label(text="Profile settings:")
-
-            layout.prop(game_profile, "game")
-            layout.prop(game_profile, "umodel_export_dir")
-            layout.prop(game_profile, "asset_dir")
