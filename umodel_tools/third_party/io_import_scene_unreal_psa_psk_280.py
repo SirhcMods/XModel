@@ -1047,10 +1047,25 @@ def pskimport(filepath,
     #==================================================================================================
     # Vertex Normal. Set.
 
-        if Normals is not None:
-            mesh_data.polygons.foreach_set("use_smooth", [True] * len(mesh_data.polygons))
-            mesh_data.normals_split_custom_set_from_vertices(Normals)
-            mesh_data.use_auto_smooth = True
+        if Normals is not None and len(Normals) == len(mesh_data.vertices):
+            mesh_data.polygons.foreach_set('use_smooth', [True] * len(mesh_data.polygons))
+
+            # Normals are already tuples like (nx, ny, nz)
+            try:
+                mesh_data.normals_split_custom_set_from_vertices(Normals)
+            except Exception as e:
+                print("[PSK] normals_split_custom_set_from_vertices failed:", e)
+                # fallback: still keep smooth shading
+                try:
+                    mesh_data.shade_smooth()
+                except Exception:
+                    pass
+        else:
+            # no normals chunk (or mismatch) → just smooth shade
+            try:
+                mesh_data.shade_smooth()
+            except Exception:
+                mesh_data.polygons.foreach_set('use_smooth', [True] * len(mesh_data.polygons))
 
     #===================================================================================================
     # UV. Set.
