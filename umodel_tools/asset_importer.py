@@ -184,14 +184,10 @@ class AssetImporter:
 
         material_desc_path_no_ext = os.path.join(umodel_export_dir, material_path_local_no_ext)
 
-        print(f"[DBG] _import_material_to_library CALLED material_name={material_name} "
-            f"path_no_ext={material_desc_path_no_ext}")
+        utils.verbose_print(f"material_name={material_name} "f"path_no_ext={material_desc_path_no_ext}")
 
         props_path = material_desc_path_no_ext + '.props.txt'
         json_path  = material_desc_path_no_ext + '.json'
- 
-        print(f"[DBG] descriptor exists? props={os.path.isfile(props_path)} json={os.path.isfile(json_path)} "
-            f"props_path={props_path} json_path={json_path}")
 
         # load texture infos from a supported descriptor format.
         # pylint: disable=unpacking-non-sequence
