@@ -23,6 +23,28 @@ import traceback
 import bpy
 
 
+def _abs_dir_path(value: str) -> str:
+    """Resolve Blender '//' paths to absolute OS paths and normalize."""
+    if not value:
+        return ""
+    value = bpy.path.abspath(value)
+    import os as _os
+    return _os.path.normpath(_os.path.abspath(value))
+
+
+def _make_abs_update(prop_name: str):
+    """Create an update callback that forces a DIR_PATH property to store an absolute path."""
+    def _upd(self, _context):
+        cur = getattr(self, prop_name, "") or ""
+        if not cur:
+            return
+        abs_p = _abs_dir_path(cur)
+        if abs_p != cur:
+            setattr(self, prop_name, abs_p)
+    return _upd
+
+
+
 # include custom lib vendoring dir
 parent_dir = os.path.abspath(os.path.dirname(__file__))
 vendor_dir = os.path.join(parent_dir, 'third_party')
@@ -79,7 +101,8 @@ def register_bounds_props(umap_result_pg_type):
         name="UMAP JSON Directory",
         description="Folder containing exported .umap .json files (scanned recursively)",
         subtype='DIR_PATH',
-        default=""
+        default="",
+        update=_make_abs_update("umodel_umap_scan_dir"),
     )
     bpy.types.Scene.umodel_umap_scan_results = bpy.props.CollectionProperty(
         type=umap_result_pg_type

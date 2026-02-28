@@ -19,6 +19,18 @@ from . import preferences
 from .utils import get_selected_vertex_world_bounds
 
 
+def _resolve_dir_path(value: str) -> str:
+    """Resolve Blender-style paths (including //) to a normalized absolute OS path."""
+    if not value:
+        return ""
+    value = bpy.path.abspath(value)
+    value = os.path.normpath(os.path.abspath(value))
+    # Blender on Windows can yield paths like "\\C:\\..." or "/C:/..."; strip that leading slash.
+    if os.name == 'nt' and len(value) >= 3 and value[0] in ('/', '\\') and value[1].isalpha() and value[2] == ':':
+        value = value[1:]
+    return value
+
+
 def _get_object_aabb_verts(obj: bpy.types.Object) -> list[tuple[float, float, float]]:
     return [obj.matrix_world @ mu.Vector(corner) for corner in obj.bound_box]
 
@@ -52,8 +64,8 @@ class UMODELTOOLS_OT_recover_unreal_asset(asset_importer.AssetImporter, bpy.type
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
 
-        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
-        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+
 
         if not umodel_export_dir:
             return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
@@ -61,8 +73,8 @@ class UMODELTOOLS_OT_recover_unreal_asset(asset_importer.AssetImporter, bpy.type
         if not os.path.isdir(umodel_export_dir):
             return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
 
-        asset_dir: str = os.path.normpath(profile.asset_dir)
-        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+
 
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
@@ -153,8 +165,8 @@ class UMODELTOOLS_OT_import_unreal_assets(asset_importer.AssetImporter, bpy.type
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
 
-        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
-        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+
 
         if not umodel_export_dir:
             return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
@@ -162,8 +174,8 @@ class UMODELTOOLS_OT_import_unreal_assets(asset_importer.AssetImporter, bpy.type
         if not os.path.isdir(umodel_export_dir):
             return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
 
-        asset_dir: str = os.path.normpath(profile.asset_dir)
-        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+
 
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
@@ -255,8 +267,8 @@ class UMODELTOOLS_OT_import_unreal_map(map_importer.MapImporter, bpy.types.Opera
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
 
-        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
-        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+
 
         if not umodel_export_dir:
             return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
@@ -264,8 +276,8 @@ class UMODELTOOLS_OT_import_unreal_map(map_importer.MapImporter, bpy.types.Opera
         if not os.path.isdir(umodel_export_dir):
             return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
 
-        asset_dir: str = os.path.normpath(profile.asset_dir)
-        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+
 
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
@@ -521,15 +533,15 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
 
-        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
-        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+
         if not umodel_export_dir:
             return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
         if not os.path.isdir(umodel_export_dir):
             return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
 
-        asset_dir: str = os.path.normpath(profile.asset_dir)
-        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
         if not os.path.isdir(asset_dir):
@@ -584,15 +596,15 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
 
-        umodel_export_dir: str = os.path.normpath(profile.umodel_export_dir)
-        umodel_export_dir = umodel_export_dir[1:] if umodel_export_dir.startswith(os.sep) else umodel_export_dir
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+
         if not umodel_export_dir:
             return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
         if not os.path.isdir(umodel_export_dir):
             return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
 
-        asset_dir: str = os.path.normpath(profile.asset_dir)
-        asset_dir = asset_dir[1:] if asset_dir.startswith(os.sep) else asset_dir
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
         if not os.path.isdir(asset_dir):
