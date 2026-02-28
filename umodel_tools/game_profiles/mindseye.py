@@ -129,6 +129,9 @@ def handle_material_texture_pbr(mat: bpy.types.Material,
             #   R = Ambient Occlusion
             #   G = Roughness
             #   B = Metallic
+            if img_node.image and img_node.image.library is not None:
+                img_node.image.make_local()
+                img_node.image.colorspace_settings.is_data = True
             orm_split = mat.node_tree.nodes.new('ShaderNodeSeparateColor')
             mat.node_tree.links.new(img_node.outputs['Color'], orm_split.inputs['Color'])
 
