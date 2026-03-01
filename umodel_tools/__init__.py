@@ -73,8 +73,8 @@ def register():
 
     try:
         auto_load.register()
-        from .panels import UMODELTOOLS_PG_umap_scan_result
-        register_bounds_props(UMODELTOOLS_PG_umap_scan_result)		
+        from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result
+        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result)		
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
@@ -86,7 +86,7 @@ def unregister():
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
-def register_bounds_props(umap_result_pg_type):
+def register_bounds_props(umap_result_pg_type, bpp_result_pg_type):
     bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
         name="Import Within Map Bounds",
         description="Only import actors within the calculated vertex bounds",
@@ -108,6 +108,24 @@ def register_bounds_props(umap_result_pg_type):
         type=umap_result_pg_type
     )
     bpy.types.Scene.umodel_umap_scan_index = bpy.props.IntProperty(default=0)
+	
+    bpy.types.Scene.umodel_bpp_scan_dir = bpy.props.StringProperty(
+        name="BPP JSON Directory",
+        description="Folder containing exported BPP_*.json files (scanned recursively)",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_bpp_scan_dir"),
+    )
+    bpy.types.Scene.umodel_bpp_scan_results = bpy.props.CollectionProperty(
+        type=bpp_result_pg_type
+    )
+    bpy.types.Scene.umodel_bpp_scan_index = bpy.props.IntProperty(default=0)
+
+    bpy.types.Scene.umodel_bpp_apply_override_materials = bpy.props.BoolProperty(
+        name="Use OverrideMaterials from BPP",
+        description="Apply per-component OverrideMaterials from BPP JSON during build",
+        default=False
+    )
 
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
@@ -119,6 +137,11 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_umap_scan_dir
     del bpy.types.Scene.umodel_umap_scan_results
     del bpy.types.Scene.umodel_umap_scan_index
+
+    del bpy.types.Scene.umodel_bpp_scan_dir
+    del bpy.types.Scene.umodel_bpp_scan_results
+    del bpy.types.Scene.umodel_bpp_scan_index
+    del bpy.types.Scene.umodel_bpp_apply_override_materials
 
 
 __all__ = (

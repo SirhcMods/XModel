@@ -133,6 +133,60 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
         row.operator("umodel.import_scanned_umap_all", text="Import All")
 
+class UMODEL_PT_bpp_builder(bpy.types.Panel):
+    bl_label = "BPP Builder"
+    bl_idname = "UMODEL_PT_bpp_builder"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 2
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        box = layout.box()
+        box.label(text="Path to BPPs")
+
+        row = box.row(align=True)
+        row.prop(scene, "umodel_bpp_scan_dir", text="")
+        row.operator("umodel.scan_bpp_dir", text="Scan", icon='VIEWZOOM')
+
+        box.template_list(
+            "UMODELTOOLS_UL_bpp_scan_results",
+            "",
+            scene,
+            "umodel_bpp_scan_results",
+            scene,
+            "umodel_bpp_scan_index",
+            rows=6
+        )
+
+		row = box.row()
+        row.prop(scene, "umodel_bpp_apply_override_materials")
+
+        row = box.row(align=True)
+        row.operator("umodel.clear_bpp_scan_results", text="Clear", icon='X')
+
+        row = box.row(align=True)
+        row.operator("umodel.build_bpp_selected", text="Build", icon='PLAY')
+
+
+class UMODELTOOLS_PG_bpp_scan_result(bpy.types.PropertyGroup):
+    selected: bpy.props.BoolProperty(name="Selected", default=False)
+    bpp_name: bpy.props.StringProperty(name="BPP")
+    bpp_path: bpy.props.StringProperty(name="Path")
+
+
+class UMODELTOOLS_UL_bpp_scan_results(bpy.types.UIList):
+    bl_idname = "UMODELTOOLS_UL_bpp_scan_results"
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
+        row = layout.row(align=True)
+        row.prop(item, "selected", text="")
+        row.label(text=item.bpp_name)
+
 class UMODELTOOLS_PG_umap_scan_result(bpy.types.PropertyGroup):
     map_name: bpy.props.StringProperty(name="Map")
     map_path: bpy.props.StringProperty(name="Path")
