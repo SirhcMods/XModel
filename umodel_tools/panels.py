@@ -163,7 +163,7 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
             rows=6
         )
 
-		row = box.row()
+        row = box.row()
         row.prop(scene, "umodel_bpp_apply_override_materials")
 
         row = box.row(align=True)
