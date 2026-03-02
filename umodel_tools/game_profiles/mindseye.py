@@ -24,6 +24,7 @@ class TextureMapTypes(enum.Enum):
     BaseColor = enum.auto()
     Normal = enum.auto()
     MRO = enum.auto()  # In MindsEye this is typically an ORM packed mask
+    GrungeMask = enum.auto()
 
 
 #: Translates names retrieved from descriptors into sensible texture map types
@@ -58,6 +59,10 @@ TEXTURE_PARAM_NAME_TRS = {
     "BaseLayer_BaseColor": TextureMapTypes.BaseColor,
     "BaseLayer_Normal": TextureMapTypes.Normal,
     "BaseLayer_Masks": TextureMapTypes.MRO,
+
+    # Grunge
+    "GrungeMask": TextureMapTypes.GrungeMask,
+    "Grunge Mask": TextureMapTypes.GrungeMask,
 }
 
 # Normalize keys for case-insensitive lookup
@@ -79,6 +84,14 @@ class MaterialContext:
     palette_tex_node: t.Optional[bpy.types.ShaderNodeTexImage] = None
     tint_value_node: t.Optional[bpy.types.ShaderNodeValue] = None
     palette_mix_node: t.Optional[bpy.types.Node] = None
+
+    # Grunge (optional)
+    grunge_tex_node: t.Optional[bpy.types.ShaderNodeTexImage] = None
+    grunge_mix_node: t.Optional[bpy.types.Node] = None
+    grunge_rgb_node: t.Optional[bpy.types.Node] = None
+    grunge_sep_node: t.Optional[bpy.types.Node] = None
+    grunge_mul_node: t.Optional[bpy.types.Node] = None
+    grunge_alpha_value_node: t.Optional[bpy.types.Node] = None
 
 
 _state_buffer: dict[bpy.types.Material, MaterialContext] = {}
@@ -158,6 +171,27 @@ def _layout_pbr_nodes(mat_ctx: MaterialContext,
     # Palette mix (if present) between BaseColor and AO/BSDF
     if mat_ctx.palette_mix_node is not None:
         try: mat_ctx.palette_mix_node.location = (x_mix, y_base)
+        except Exception: pass
+
+    # Grunge chain (optional) sits below the basecolor row
+    y_grunge = y_base - 260
+    if mat_ctx.grunge_tex_node is not None:
+        try: mat_ctx.grunge_tex_node.location = (x_img, y_grunge)
+        except Exception: pass
+    if mat_ctx.grunge_sep_node is not None:
+        try: mat_ctx.grunge_sep_node.location = (x_mid, y_grunge)
+        except Exception: pass
+    if mat_ctx.grunge_alpha_value_node is not None:
+        try: mat_ctx.grunge_alpha_value_node.location = (x_mid, y_grunge - 160)
+        except Exception: pass
+    if mat_ctx.grunge_mul_node is not None:
+        try: mat_ctx.grunge_mul_node.location = (x_mix - 40, y_grunge - 40)
+        except Exception: pass
+    if mat_ctx.grunge_rgb_node is not None:
+        try: mat_ctx.grunge_rgb_node.location = (x_mid, y_grunge + 120)
+        except Exception: pass
+    if mat_ctx.grunge_mix_node is not None:
+        try: mat_ctx.grunge_mix_node.location = (x_mix, y_grunge + 40)
         except Exception: pass
 
     # AO mix (if present) between BaseColor and BSDF
@@ -372,6 +406,193 @@ def _try_wire_palette(mat: bpy.types.Material,
     _layout_pbr_nodes(mat_ctx, ao_mix_node, bsdf_node, out_node)
 
 
+def _get_color_param_rgba(desc_ast: lark.Tree | dict[str, t.Any] | list[t.Any],
+                          name: str) -> tuple[float, float, float, float] | None:
+    """Fetch a named color parameter from MindsEye material JSON.
+
+    Expected location:
+      desc["Parameters"]["Colors"]["Grunge Color"] = {R,G,B,A,...}
+    """
+    if not isinstance(desc_ast, dict):
+        return None
+    params = desc_ast.get("Parameters")
+    if not isinstance(params, dict):
+        return None
+    colors = params.get("Colors")
+    if not isinstance(colors, dict):
+        return None
+
+    target = name.lower()
+    entry = None
+    # Exact key preferred, but allow case-insensitive match.
+    if name in colors:
+        entry = colors.get(name)
+    else:
+        for k, v in colors.items():
+            if isinstance(k, str) and k.lower() == target:
+                entry = v
+                break
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return (
+            float(entry.get("R", 0.0)),
+            float(entry.get("G", 0.0)),
+            float(entry.get("B", 0.0)),
+            float(entry.get("A", 1.0)),
+        )
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _find_basecolor_feed_socket(ao_mix_node: bpy.types.ShaderNodeMix | None,
+                                bsdf_node: bpy.types.Node | None) -> bpy.types.NodeSocket | None:
+    """Return the *input socket* that currently receives the final BaseColor signal.
+
+    Preference order:
+      1) AO multiply chain input (ao_mix_node.inputs[6])
+      2) BSDF Base Color input
+    """
+    if ao_mix_node is not None and len(ao_mix_node.inputs) > 6:
+        return ao_mix_node.inputs[6]
+    if bsdf_node is not None:
+        try:
+            return bsdf_node.inputs['Base Color']
+        except Exception:
+            return None
+    return None
+
+
+def _ensure_grunge_pipeline(mat: bpy.types.Material,
+                            mat_ctx: MaterialContext,
+                            ao_mix_node: bpy.types.ShaderNodeMix | None,
+                            bsdf_node: bpy.types.Node | None,
+                            out_node: bpy.types.Node | None):
+    """If GrungeMask exists, blend Grunge Color into the current BaseColor chain.
+
+    - Grunge mask drives Fac (multiplied by Grunge Color alpha).
+    - Color1 = current basecolor chain
+    - Color2 = Grunge Color RGB
+
+    If Grunge Color is missing, defaults:
+      - Fac multiplier = 0.5
+      - RGB = light gray
+    """
+    if mat_ctx.grunge_tex_node is None:
+        return
+
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    # Determine target input where basecolor is currently fed.
+    target_in = _find_basecolor_feed_socket(ao_mix_node, bsdf_node)
+    if target_in is None:
+        return
+
+    # Capture existing upstream source feeding base color.
+    upstream = None
+    if target_in.is_linked and target_in.links:
+        upstream = target_in.links[0].from_socket
+    else:
+        # Fall back to known sources when not yet linked.
+        if mat_ctx.palette_mix_node is not None:
+            # ShaderNodeMix outputs[2] is Result
+            try:
+                upstream = mat_ctx.palette_mix_node.outputs[2]
+            except Exception:
+                upstream = None
+        elif mat_ctx.base_tex_node is not None:
+            upstream = mat_ctx.base_tex_node.outputs.get('Color')
+
+    if upstream is None:
+        return
+
+    # Build nodes once.
+    if mat_ctx.grunge_sep_node is None:
+        sep = nodes.new('ShaderNodeSeparateColor')
+        mat_ctx.grunge_sep_node = sep
+        links.new(mat_ctx.grunge_tex_node.outputs['Color'], sep.inputs['Color'])
+    else:
+        sep = mat_ctx.grunge_sep_node
+
+    if mat_ctx.grunge_alpha_value_node is None:
+        alpha_v = nodes.new('ShaderNodeValue')
+        alpha_v.label = 'Grunge Alpha'
+        mat_ctx.grunge_alpha_value_node = alpha_v
+    else:
+        alpha_v = mat_ctx.grunge_alpha_value_node
+
+    if mat_ctx.grunge_mul_node is None:
+        mul = nodes.new('ShaderNodeMath')
+        mul.operation = 'MULTIPLY'
+        mul.use_clamp = True
+        mul.label = 'GrungeFac'
+        mat_ctx.grunge_mul_node = mul
+        links.new(sep.outputs['Red'], mul.inputs[0])
+        links.new(alpha_v.outputs[0], mul.inputs[1])
+    else:
+        mul = mat_ctx.grunge_mul_node
+
+    if mat_ctx.grunge_rgb_node is None:
+        rgb = nodes.new('ShaderNodeRGB')
+        rgb.label = 'Grunge Color'
+        mat_ctx.grunge_rgb_node = rgb
+    else:
+        rgb = mat_ctx.grunge_rgb_node
+
+    if mat_ctx.grunge_mix_node is None:
+        mix = nodes.new('ShaderNodeMix')
+        mix.data_type = 'RGBA'
+        mix.blend_type = 'MULTIPLY'
+        mix.label = 'GrungeMix'
+        try:
+            mix.use_clamp = True
+        except Exception:
+            pass
+        mat_ctx.grunge_mix_node = mix
+        # Fac
+        _clear_links(mix.inputs[0])
+        links.new(mul.outputs[0], mix.inputs[0])
+        # A (basecolor)
+        _clear_links(mix.inputs[6])
+        links.new(upstream, mix.inputs[6])
+        # B (grunge color)
+        _clear_links(mix.inputs[7])
+        links.new(rgb.outputs[0], mix.inputs[7])
+    else:
+        mix = mat_ctx.grunge_mix_node
+        # Re-wire A to current upstream each time because basecolor source can change
+        _clear_links(mix.inputs[6])
+        links.new(upstream, mix.inputs[6])
+
+    # Splice output into basecolor target
+    _clear_links(target_in)
+    links.new(mix.outputs[2], target_in)
+
+    # Set grunge color defaults from JSON
+    rgba = _get_color_param_rgba(mat_ctx.desc_ast, 'Grunge Color')
+    if rgba is None:
+        # Default per user request
+        rgb.outputs[0].default_value = (0.8, 0.8, 0.8, 1.0)
+        alpha_v.outputs[0].default_value = 0.5
+    else:
+        r, g, b, a = rgba
+        rgb.outputs[0].default_value = (r, g, b, 1.0)
+        alpha_v.outputs[0].default_value = a
+
+    _layout_pbr_nodes(mat_ctx, ao_mix_node, bsdf_node, out_node)
+
+
+def _try_wire_grunge(mat: bpy.types.Material,
+                     mat_ctx: MaterialContext,
+                     ao_mix_node: bpy.types.ShaderNodeMix | None,
+                     bsdf_node: bpy.types.Node | None,
+                     out_node: bpy.types.Node | None):
+    if mat_ctx.grunge_tex_node is None:
+        return
+    _ensure_grunge_pipeline(mat, mat_ctx, ao_mix_node, bsdf_node, out_node)
+
+
 def process_material(mat: bpy.types.Material,
                      desc_ast: lark.Tree | dict[str, t.Any] | list[t.Any],
                      use_pbr: bool):  # pylint: disable=unused-argument
@@ -413,6 +634,8 @@ def handle_material_texture_pbr(mat: bpy.types.Material,
             _ensure_palette_pipeline(mat, mat_ctx, ao_mix_node, mat_ctx.bsdf_node)
             # If base color was already connected directly, this will rewire it through PaletteMix.
             _try_wire_palette(mat, mat_ctx, ao_mix_node, bsdf_node, out_node)
+            # Palette may change the basecolor source; re-splice grunge if present.
+            _try_wire_grunge(mat, mat_ctx, ao_mix_node, bsdf_node, out_node)
 
         case TextureMapTypes.BaseColor:
             # Mix node is set to MULTIPLY in the importer; factor controls AO strength.
@@ -433,6 +656,9 @@ def handle_material_texture_pbr(mat: bpy.types.Material,
                     mat.node_tree.links.new(img_node.outputs['Color'], ao_mix_node.inputs[6])
                 else:
                     mat.node_tree.links.new(img_node.outputs['Color'], bsdf_node.inputs['Base Color'])
+
+            # BaseColor wiring is now finalized for this stage; splice grunge if present.
+            _try_wire_grunge(mat, mat_ctx, ao_mix_node, bsdf_node, out_node)
             mat.node_tree.links.new(img_node.outputs['Alpha'], bsdf_node.inputs['Alpha'])
             img_node.select = True
             mat.node_tree.nodes.active = img_node
@@ -448,6 +674,19 @@ def handle_material_texture_pbr(mat: bpy.types.Material,
             mat.node_tree.links.new(img_node.outputs['Color'], normal_map_node.inputs['Color'])
             mat.node_tree.links.new(normal_map_node.outputs['Normal'], bsdf_node.inputs['Normal'])
             _layout_pbr_nodes(mat_ctx, ao_mix_node, bsdf_node, out_node)
+
+        case TextureMapTypes.GrungeMask:
+            # Store node and splice into basecolor chain (only if present)
+            if img_node.image and img_node.image.library is not None:
+                img_node.image.make_local()
+                img_node.image.colorspace_settings.is_data = True
+            try:
+                if img_node.image is not None:
+                    img_node.image.colorspace_settings.name = 'Non-Color'
+            except Exception:
+                pass
+            mat_ctx.grunge_tex_node = img_node
+            _try_wire_grunge(mat, mat_ctx, ao_mix_node, bsdf_node, out_node)
 
         case TextureMapTypes.MRO:
             # MindsEye packed mask is typically ORM:
