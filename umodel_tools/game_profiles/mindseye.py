@@ -14,6 +14,9 @@ import lark
 GAME_NAME = "MindsEye"
 GAME_DESCRIPTION = "MindsEye (2025) by BARB"
 
+ENABLE_COLOR_PALETTE_UNWRAPPER = True  # Enables per-instance palette tint unwrapper (MindsEye only)
+
+
 
 class TextureMapTypes(enum.Enum):
     """All texture map types supported by the material generator."""

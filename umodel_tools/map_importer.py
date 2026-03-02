@@ -15,6 +15,8 @@ from .ops import override_materials as override_ops
 from . import asset_importer
 from . import utils
 from . import fmodel_json_parser
+from . import game_profiles
+from . import color_palette_unwrapper  # MindsEye palette tint support (optional)
 from .utils import static_mesh_has_instance_in_bounds
 
 
@@ -34,6 +36,14 @@ def split_object_path(object_path):
 
 _RE_TRAILING_OBJPATH_DOTNUM = re.compile(r"\.(\d+)$")  # ends with .0/.1/etc
 
+
+
+def _is_palette_unwrapper_enabled(game_profile) -> bool:
+    """True if the active game profile enables MindsEye palette tint unwrapper.
+
+    In most call sites `game_profile` is the profile key string (e.g. 'mindseye')."""
+    impl = game_profiles.GAME_HANDLERS.get(game_profile) if isinstance(game_profile, str) else game_profile
+    return bool(getattr(impl, 'ENABLE_COLOR_PALETTE_UNWRAPPER', False) or getattr(impl, 'use_color_palette_unwrapper', False))
 
 def strip_objectpath_trailing_dotnum(object_path: str) -> str:
     """Strip trailing ".<digits>" from UE ObjectPath while preserving inner periods."""
@@ -121,6 +131,10 @@ def _timer_post_import_reload_and_reapply(collection_name: str,
                                          asset_dir: str,
                                          game_profile: str,
                                          apply_override_materials: bool = True) -> t.Optional[float]:
+
+    # MindsEye: per-instance palette tint ids extracted from PerInstanceSMCustomData (optional)
+    per_instance_tint_ids: t.Optional[list[list[int]]] = None
+    per_instance_packet_width: int = 0
     """Timer callback to reload libraries and re-apply OverrideMaterials.
 
     IMPORTANT: This must NOT capture an operator instance.
@@ -370,6 +384,22 @@ class StaticMesh:
 
                     self.instance_transforms.append(trs)
 
+                # MindsEye optional: extract per-instance palette tint ids from PerInstanceSMCustomData
+                try:
+                    width = None
+                    ncf = props.get('NumCustomDataFloats', None) if isinstance(props, dict) else None
+                    if isinstance(ncf, (int, float)):
+                        width = int(ncf)
+                    custom_flat = json_entity.get('PerInstanceSMCustomData', None)
+                    if custom_flat is None and isinstance(props, dict):
+                        custom_flat = props.get('PerInstanceSMCustomData', None)
+                    if width and isinstance(custom_flat, list) and custom_flat:
+                        self.per_instance_packet_width = width
+                        packets = color_palette_unwrapper.chunk_custom_data(custom_flat, len(instances), width)
+                        self.per_instance_tint_ids = [color_palette_unwrapper.extract_tint_ids_from_packet(p, width) for p in packets]
+                except Exception:
+                    self.per_instance_tint_ids = None
+
     @property
     def invalid(self) -> bool:
         return (self.no_path or self.no_entity or self.base_shape or self.no_mesh or self.no_per_instance_data
@@ -391,10 +421,24 @@ class StaticMesh:
         trs = self.transform
 
         if self.is_instanced:
-            for instance_trs in self.instance_transforms:
+            for _inst_idx, instance_trs in enumerate(self.instance_transforms):
                 mat_world = trs.matrix_4x4 @ instance_trs.matrix_4x4
                 new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
                 new_obj.rotation_mode = 'XYZ'
+
+                # MindsEye palette tint support: persist instance identity + tint props
+                use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+                if use_unwrapper:
+                    try:
+                        new_obj['_umodel_source_outer'] = self.entity_name
+                        new_obj['_umodel_instance_index'] = int(_inst_idx)
+                    except Exception:
+                        pass
+                    try:
+                        if self.per_instance_tint_ids and _inst_idx < len(self.per_instance_tint_ids):
+                            color_palette_unwrapper.store_tint_custom_props(new_obj, self.per_instance_tint_ids[_inst_idx], packet_width=self.per_instance_packet_width)
+                    except Exception:
+                        pass
 
                 # Persist mesh object path for base-material reconstruction.
                 try:
@@ -420,14 +464,14 @@ class StaticMesh:
                     force_reassign=True
                 )
                 if getattr(importer, 'apply_override_materials', True):
-                                    importer._apply_override_materials_to_object(
-                                        new_obj,
-                                        self.override_materials,
-                                        umodel_export_dir=umodel_export_dir,
-                                        asset_dir=asset_dir,
-                                        game_profile=game_profile,
-                                        db=db
-                                    )
+                    importer._apply_override_materials_to_object(
+                        new_obj,
+                        self.override_materials,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=game_profile,
+                        db=db
+                    )
                 objects.append(new_obj)
 
         else:
@@ -459,16 +503,24 @@ class StaticMesh:
                 force_reassign=True
             )
             if getattr(importer, 'apply_override_materials', True):
-                            importer._apply_override_materials_to_object(
-                                new_obj,
-                                self.override_materials,
-                                umodel_export_dir=umodel_export_dir,
-                                asset_dir=asset_dir,
-                                game_profile=game_profile,
-                                db=db
-                            )
+                importer._apply_override_materials_to_object(
+                    new_obj,
+                    self.override_materials,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=game_profile,
+                    db=db
+                )
             objects.append(new_obj)
 
+
+        # MindsEye: final tint relink pass (only when enabled)
+        use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+        if use_unwrapper:
+            try:
+                color_palette_unwrapper.relink_tinted_materials_by_tint_id(objects)
+            except Exception:
+                pass
         return objects
 
 
@@ -1230,6 +1282,15 @@ class MapImporter(asset_importer.AssetImporter):
         if repaired:
             utils.verbose_print(f"Base material slots repaired after library reload: objects={repaired}")
 
+
+        # MindsEye: re-link tinted materials after library reload (only when enabled)
+        use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+        if use_unwrapper:
+            try:
+                objs = list(_iter_objects_recursive(coll))
+                color_palette_unwrapper.relink_tinted_materials_by_tint_id(objs)
+            except Exception as e:
+                utils.verbose_print(f'Tint relink pass failed: {e}')
         return None
 
     def _get_or_link_material_from_objectpath(self,
