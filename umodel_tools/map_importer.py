@@ -688,34 +688,9 @@ class StaticMesh:
         objects = []
         trs = self.transform
 
-        # Bounds-import de-dupe: skip identical instances across multiple scanned UMAPs.
-        # Enabled only when importer sets _bounds_dedupe_enabled (Import UMAPs with bounds).
-        def _bounds_dedupe_key(mesh_path: str, mat: 'mu.Matrix'):
-            try:
-                # Use 3x4 world matrix (translation included) rounded to tolerate float noise.
-                vals = []
-                for r in range(3):
-                    for c in range(4):
-                        vals.append(round(float(mat[r][c]), 3))
-                return (mesh_path or '', *vals)
-            except Exception:
-                return None
-
-        _dedupe_enabled = bool(getattr(importer, '_bounds_dedupe_enabled', False))
-        _dedupe_set = getattr(importer, '_bounds_seen_keys', None)
-
         if self.is_instanced:
             for _inst_idx, instance_trs in enumerate(self.instance_transforms):
                 mat_world = trs.matrix_4x4 @ instance_trs.matrix_4x4
-                # De-dupe before creating object
-                if _dedupe_enabled and isinstance(_dedupe_set, set):
-                    _mw = (mat_world if self.parent_mtx is None else (self.parent_mtx @ mat_world))
-                    _k = _bounds_dedupe_key(getattr(self, 'mesh_object_path', ''), _mw)
-                    if _k is not None:
-                        if _k in _dedupe_set:
-                            continue
-                        _dedupe_set.add(_k)
-
                 new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
                 new_obj.rotation_mode = 'XYZ'
 
@@ -768,18 +743,6 @@ class StaticMesh:
                 objects.append(new_obj)
 
         else:
-            # De-dupe before creating object
-            if _dedupe_enabled and isinstance(_dedupe_set, set):
-                try:
-                    _mw = (trs.matrix_4x4 if self.parent_mtx is None else (self.parent_mtx @ trs.matrix_4x4))
-                    _k = _bounds_dedupe_key(getattr(self, 'mesh_object_path', ''), _mw)
-                    if _k is not None:
-                        if _k in _dedupe_set:
-                            return []
-                        _dedupe_set.add(_k)
-                except Exception:
-                    pass
-
             new_obj = bpy.data.objects.new(obj.name, object_data=obj.data)
 
             # Persist mesh object path for base-material reconstruction.
