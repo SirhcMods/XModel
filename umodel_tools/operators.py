@@ -60,6 +60,17 @@ class UMODELTOOLS_OT_recover_unreal_asset(asset_importer.AssetImporter, bpy.type
 
         selected_objects: t.Sequence[selected_objects] = context.selected_objects
 
+        # Apply general scene import options
+        scene = context.scene
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            pass
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            pass
+
         profile = preferences.get_addon_preferences().get_active_profile()
         if profile is None:
             return self._op_message('ERROR', "You need to have an active game profile selected.")
@@ -406,6 +417,16 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
 
+        # Apply general scene import options
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            pass
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            pass
+
         if not hasattr(scene, "umodel_umap_scan_results"):
             self.report({'ERROR'}, "UMAP scan results property not registered. Re-enable addon or restart Blender.")
             return {'CANCELLED'}
@@ -708,10 +729,16 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
         # MapImporter.apply_override_materials is an operator property, so we must copy the
         # scene setting into the operator instance before we start importing/linking meshes.
         try:
-            self.apply_override_materials = bool(getattr(scene, "umodel_bpp_apply_override_materials", False))
+            # Prefer unified General setting; fall back to legacy BPP-only toggle if present
+            self.apply_override_materials = bool(getattr(scene, "umodel_apply_override_materials", getattr(scene, "umodel_bpp_apply_override_materials", False)))
         except Exception:
             # If anything goes wrong, fall back to not applying overrides.
             self.apply_override_materials = False
+
+            try:
+                self.load_pbr_maps = bool(getattr(scene, "umodel_load_pbr_maps", True))
+            except Exception:
+                pass
 
         # build list of selected entries; if none checked, use active index
         selected_items = [it for it in scene.umodel_bpp_scan_results if getattr(it, "selected", False)]
@@ -751,6 +778,16 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
 
     def execute(self, context):
         scene = context.scene
+
+        # Apply general scene import options
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            pass
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            pass
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")

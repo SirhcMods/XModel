@@ -127,6 +127,20 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type):
         default=False
     )
 
+
+    # General import options (apply to single UMAP import, bounds import, and BPP builder)
+    bpy.types.Scene.umodel_apply_override_materials = bpy.props.BoolProperty(
+        name="Use OverrideMaterials",
+        description="Apply per-component OverrideMaterials when available (UMAP bounds import + single UMAP import + BPP builder)",
+        default=False
+    )
+
+    bpy.types.Scene.umodel_load_pbr_maps = bpy.props.BoolProperty(
+        name="Use PBR Maps",
+        description="Load PBR textures (normal/ORM/etc) into materials when available",
+        default=True
+    )
+
     bpy.types.Scene.umodel_asset_path_filter = bpy.props.StringProperty(
         name="Import Filter Path",
         description="Only import meshes whose Unreal asset path starts with this prefix (leave blank for no filter)",
@@ -150,6 +164,8 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_bpp_scan_results
     del bpy.types.Scene.umodel_bpp_scan_index
     del bpy.types.Scene.umodel_bpp_apply_override_materials
+    del bpy.types.Scene.umodel_apply_override_materials
+    del bpy.types.Scene.umodel_load_pbr_maps
 
     del bpy.types.Scene.umodel_asset_path_filter
 

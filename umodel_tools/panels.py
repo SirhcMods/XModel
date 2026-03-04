@@ -37,13 +37,36 @@ class UMODELTOOLS_PG_asset(bpy.types.PropertyGroup):
         description="Path of the asset in the Unreal engine game"
     )
 
+
+class UMODEL_PT_general(bpy.types.Panel):
+    bl_label = "General"
+    bl_idname = "UMODEL_PT_general"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 0
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        prefs = get_addon_preferences()
+
+        col = layout.column(align=True)
+        if hasattr(scene, "umodel_apply_override_materials"):
+            col.prop(scene, "umodel_apply_override_materials")
+        if hasattr(scene, "umodel_load_pbr_maps"):
+            col.prop(scene, "umodel_load_pbr_maps")
+        # Verbose is an addon preference (global)
+        col.prop(prefs, "verbose")
+
+
 class UMODEL_PT_profile_settings(bpy.types.Panel):
     bl_label = "Import UMAP"
     bl_idname = "UMODEL_PT_profile_settings"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'XModel'
-    bl_order = 0
+    bl_order = 1
 
     def draw(self, context):
         layout = self.layout
@@ -92,7 +115,7 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'XModel'
-    bl_order = 1
+    bl_order = 2
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -140,7 +163,7 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'XModel'
-    bl_order = 2
+    bl_order = 3
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -163,9 +186,6 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
             "umodel_bpp_scan_index",
             rows=6
         )
-
-        row = box.row()
-        row.prop(scene, "umodel_bpp_apply_override_materials")
 
         row = box.row(align=True)
         row.operator("umodel.clear_bpp_scan_results", text="Clear", icon='X')
