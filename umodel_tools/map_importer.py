@@ -127,35 +127,280 @@ def _extract_ref_name(value: t.Any) -> str:
     return ""
 
 
+
+
+# -----------------------------------------------------------------------------
+# Post-import library reload/material repair batching
+#
+# Importing many UMAPs can register one timer per map. Each timer previously reloaded
+# *all* linked libraries, which is extremely slow (N maps -> N full reloads).
+#
+# We batch post-import repair work across collections:
+#   - Reload libraries ONCE per batch
+#   - Process collections in chunks via a single timer to keep UI responsive
+#   - Provide progress (0-100%) for the repair stage
+# -----------------------------------------------------------------------------
+
+_POST_IMPORT_TASKS: list[dict[str, t.Any]] = []
+_POST_IMPORT_ACTIVE: bool = False
+_POST_IMPORT_STATE: dict[str, t.Any] = {}
+
+
+def _count_mesh_objects_recursive(coll: bpy.types.Collection) -> int:
+    c = 0
+    for o in coll.objects:
+        if o.type == "MESH":
+            c += 1
+    for cc in coll.children:
+        c += _count_mesh_objects_recursive(cc)
+    return c
+
+
+def _iter_mesh_object_names_recursive(coll: bpy.types.Collection) -> list[str]:
+    names: list[str] = []
+    for o in coll.objects:
+        if o.type == "MESH":
+            names.append(o.name)
+    for cc in coll.children:
+        names.extend(_iter_mesh_object_names_recursive(cc))
+    return names
+
+
+def _post_import_enqueue(collection_name: str,
+                         umodel_export_dir: str,
+                         asset_dir: str,
+                         game_profile: str,
+                         apply_override_materials: bool = True) -> None:
+    """Enqueue a post-import repair task for a collection.
+
+    This is used to batch expensive linked-library reload and material slot repairs
+    across many imported maps.
+    """
+    global _POST_IMPORT_ACTIVE, _POST_IMPORT_TASKS, _POST_IMPORT_STATE
+
+    _POST_IMPORT_TASKS.append({
+        "collection_name": collection_name,
+        "umodel_export_dir": umodel_export_dir,
+        "asset_dir": asset_dir,
+        "game_profile": game_profile,
+        "apply_override_materials": apply_override_materials,
+    })
+
+    # Start the batch worker if not active.
+    if not _POST_IMPORT_ACTIVE:
+        _POST_IMPORT_ACTIVE = True
+        _POST_IMPORT_STATE = {
+            "reload_done": False,
+            "total_objs": 0,
+            "done_objs": 0,
+            "task_index": 0,
+            "phase": "init",
+            "current": None,         # current task dict
+            "current_objs": [],      # list[str] names
+            "current_i": 0,
+        }
+
+        # Pre-compute a best-effort total object count for progress.
+        try:
+            total = 0
+            for tsk in _POST_IMPORT_TASKS:
+                c = bpy.data.collections.get(tsk["collection_name"])
+                if c:
+                    total += _count_mesh_objects_recursive(c)
+            _POST_IMPORT_STATE["total_objs"] = max(total, 1)
+        except Exception:
+            _POST_IMPORT_STATE["total_objs"] = 1
+
+        bpy.app.timers.register(_timer_post_import_batch_worker, first_interval=0.01)
+
+
+def _timer_post_import_batch_worker() -> t.Optional[float]:
+    """Single timer worker that processes post-import repair in chunks with progress."""
+    global _POST_IMPORT_ACTIVE, _POST_IMPORT_TASKS, _POST_IMPORT_STATE
+
+    try:
+        wm = bpy.context.window_manager
+    except Exception:
+        wm = None
+
+    def _progress(pct: float, msg: str = "") -> None:
+        try:
+            if wm is not None:
+                if not _POST_IMPORT_STATE.get("_progress_started", False):
+                    wm.progress_begin(0, 100)
+                    _POST_IMPORT_STATE["_progress_started"] = True
+                wm.progress_update(int(max(0, min(100, pct))))
+            if msg:
+                utils.verbose_print(msg)
+        except Exception:
+            pass
+
+    # If nothing left, finish.
+    if not _POST_IMPORT_TASKS:
+        try:
+            if wm is not None and _POST_IMPORT_STATE.get("_progress_started", False):
+                wm.progress_end()
+        except Exception:
+            pass
+        _POST_IMPORT_ACTIVE = False
+        _POST_IMPORT_STATE = {}
+        return None
+
+    # Phase 1: reload libraries ONCE per batch.
+    if not _POST_IMPORT_STATE.get("reload_done", False):
+        _progress(0.0, "Post-import: reloading linked libraries (batched)...")
+        for lib in bpy.data.libraries:
+            try:
+                lib.reload()
+            except Exception:
+                pass
+        _POST_IMPORT_STATE["reload_done"] = True
+        _POST_IMPORT_STATE["phase"] = "process"
+        # Continue quickly.
+        return 0.01
+
+    # Ensure we have a current task.
+    if _POST_IMPORT_STATE.get("current") is None:
+        task = _POST_IMPORT_TASKS.pop(0)
+        _POST_IMPORT_STATE["current"] = task
+        coll = bpy.data.collections.get(task["collection_name"])
+        if coll is None:
+            _POST_IMPORT_STATE["current"] = None
+            return 0.01
+
+        _POST_IMPORT_STATE["current_objs"] = _iter_mesh_object_names_recursive(coll)
+        _POST_IMPORT_STATE["current_i"] = 0
+        _progress(
+            (_POST_IMPORT_STATE["done_objs"] / _POST_IMPORT_STATE["total_objs"]) * 100.0,
+            f"Post-import: repairing materials for {task['collection_name']} (objs={len(_POST_IMPORT_STATE['current_objs'])})"
+        )
+        return 0.01
+
+    # Process current collection in chunks to avoid freezing.
+    task = _POST_IMPORT_STATE["current"]
+    coll = bpy.data.collections.get(task["collection_name"])
+    if coll is None:
+        _POST_IMPORT_STATE["current"] = None
+        return 0.01
+
+    helper = MapImporter()
+
+    # Chunk size: tune for responsiveness vs speed.
+    CHUNK = 250
+    objs = _POST_IMPORT_STATE.get("current_objs", [])
+    i = int(_POST_IMPORT_STATE.get("current_i", 0))
+    end = min(i + CHUNK, len(objs))
+
+    repaired = 0
+    reapplied = 0
+
+    # One-pass per object: persist base slots; apply overrides; else repair base slots.
+    for idx in range(i, end):
+        obj_name = objs[idx]
+        obj = bpy.data.objects.get(obj_name)
+        if obj is None or obj.type != "MESH":
+            continue
+
+        # Persist base slots before anything else.
+        try:
+            helper._persist_base_material_slots(obj)
+        except Exception:
+            pass
+
+        has_overrides = False
+        if task.get("apply_override_materials", True):
+            try:
+                s = obj.get("_umodel_override_materials", "")
+                if s:
+                    overrides = helper._decode_override_materials(s)
+                    if overrides and any(x is not None for x in overrides):
+                        has_overrides = True
+                        helper._apply_override_materials_to_object(
+                            obj,
+                            overrides,
+                            umodel_export_dir=task["umodel_export_dir"],
+                            asset_dir=task["asset_dir"],
+                            game_profile=task["game_profile"],
+                            db=None
+                        )
+                        reapplied += 1
+            except Exception:
+                has_overrides = False
+
+        # Repair base slots (force full base reassign only when no overrides).
+        try:
+            if helper._repair_base_material_slots(
+                obj,
+                umodel_export_dir=task["umodel_export_dir"],
+                asset_dir=task["asset_dir"],
+                game_profile=task["game_profile"],
+                db=None,
+                force_reassign=(not has_overrides)
+            ):
+                repaired += 1
+        except Exception:
+            pass
+
+    _POST_IMPORT_STATE["current_i"] = end
+    _POST_IMPORT_STATE["done_objs"] = int(_POST_IMPORT_STATE.get("done_objs", 0)) + (end - i)
+
+    pct = (_POST_IMPORT_STATE["done_objs"] / _POST_IMPORT_STATE["total_objs"]) * 100.0
+    _progress(pct)
+
+    # Finished this collection?
+    if end >= len(objs):
+        # MindsEye: tint relink per collection (only when enabled)
+        try:
+            use_unwrapper = _is_palette_unwrapper_enabled(task["game_profile"])
+            if use_unwrapper:
+                # Re-evaluate objects from the collection directly (safer than cached names)
+                def _iter_objects_recursive(c: bpy.types.Collection):
+                    for o in c.objects:
+                        yield o
+                    for cc in c.children:
+                        yield from _iter_objects_recursive(cc)
+                objs2 = list(_iter_objects_recursive(coll))
+                color_palette_unwrapper.relink_tinted_materials_by_tint_id(objs2)
+        except Exception as e:
+            utils.verbose_print(f"Tint relink pass failed: {e}")
+
+        if reapplied or repaired:
+            utils.verbose_print(
+                f"Post-import done for {task['collection_name']}: overrides={reapplied} repaired={repaired}"
+            )
+
+        _POST_IMPORT_STATE["current"] = None
+        _POST_IMPORT_STATE["current_objs"] = []
+        _POST_IMPORT_STATE["current_i"] = 0
+        return 0.01
+
+    # Continue chunking.
+    return 0.01
+
+
 def _timer_post_import_reload_and_reapply(collection_name: str,
                                          umodel_export_dir: str,
                                          asset_dir: str,
                                          game_profile: str,
                                          apply_override_materials: bool = True) -> t.Optional[float]:
+    """Compatibility wrapper.
 
-    # MindsEye: per-instance palette tint ids extracted from PerInstanceSMCustomData (optional)
-    per_instance_tint_ids: t.Optional[list[list[int]]] = None
-    per_instance_packet_width: int = 0
-    """Timer callback to reload libraries and re-apply OverrideMaterials.
-
-    IMPORTANT: This must NOT capture an operator instance.
-    Some call sites execute MapImporter methods on a bpy.types.Operator subclass via
-    multiple inheritance. Blender frees operator StructRNA right after execution, and
-    timer callbacks would crash if they reference `self`.
+    Historically each imported map registered its own timer callback which reloaded *all*
+    libraries. That pattern is extremely slow for bulk imports. We now enqueue the work
+    into a single batched timer worker and stop this timer immediately.
     """
     try:
-        helper = MapImporter()
-        return helper._post_import_reload_and_reapply(
-            collection_name,
-            umodel_export_dir,
-            asset_dir,
-            game_profile,
+        _post_import_enqueue(
+            collection_name=collection_name,
+            umodel_export_dir=umodel_export_dir,
+            asset_dir=asset_dir,
+            game_profile=game_profile,
             apply_override_materials=apply_override_materials
         )
     except Exception as e:
-        # Don't crash the timer loop; just log.
-        utils.verbose_print(f"OverrideMaterials post-import timer failed: {e}")
-        return None
+        utils.verbose_print(f"Post-import enqueue failed: {e}")
+    return None
+
 
 
 def parse_ue_object_name(obj_name: str) -> tuple[str, str, str]:
@@ -1521,17 +1766,13 @@ class MapImporter(asset_importer.AssetImporter):
 
                         light.import_light(import_collection)
 
-        # TODO: required due to unknown reason, blender bug? Otherwise, some meshes have None materials.
-        bpy.app.timers.register(
-            functools.partial(
-                _timer_post_import_reload_and_reapply,
-                import_collection.name,
-                umodel_export_dir,
-                asset_dir,
-                game_profile,
-                getattr(self, 'apply_override_materials', True),
-            ),
-            first_interval=0.010
+        # Post-import: batch library reload/material repair so bulk UMAP imports don't freeze Blender.
+        _post_import_enqueue(
+            import_collection.name,
+            umodel_export_dir,
+            asset_dir,
+            game_profile,
+            getattr(self, 'apply_override_materials', True),
         )
 
         return True
