@@ -1165,6 +1165,215 @@ class MapImporter(asset_importer.AssetImporter):
                 })
         return out
 
+    # ---------------------------------------------------------------------
+    # Bounds import: BPP-only mode
+    # ---------------------------------------------------------------------
+    def _unique_object_name(self, base: str) -> str:
+        """Return a unique Blender object name based on base."""
+        if base not in bpy.data.objects:
+            return base
+        i = 1
+        while f"{base}.{i:03d}" in bpy.data.objects:
+            i += 1
+        return f"{base}.{i:03d}"
+
+    def _get_or_create_collection(self, name: str) -> bpy.types.Collection:
+        col = bpy.data.collections.get(name)
+        if col is None:
+            col = bpy.data.collections.new(name)
+            bpy.context.scene.collection.children.link(col)
+        return col
+
+    def _import_bpps_from_map(self,
+                              context: bpy.types.Context,
+                              map_path: str,
+                              umodel_export_dir: str,
+                              asset_dir: str,
+                              game_profile: str,
+                              db: t.Optional[asset_db.AssetDB] = None,
+                              map_index: int = 1,
+                              map_total: int = 1) -> bool:
+        """Import only placed BPP LevelInstances from a UMAP json.
+
+        This scans the UMAP JSON for LevelInstanceComponent Root entities whose Outer
+        starts with 'BPP_' and then builds each referenced BPP json under a root empty.
+        The root empty receives the placement transform (UE -> Blender conversion is
+        consistent with the StaticMesh import path: cm->m and flipped Y, negated Pitch/Yaw).
+        """
+
+        if not os.path.exists(map_path):
+            print(f"Error: File {map_path} not found. Skipping.")
+            return False
+
+        with open(map_path, mode='r', encoding='utf-8') as file:
+            json_object = json.load(file)
+
+        if not isinstance(json_object, list):
+            return False
+
+        # Put all BPP roots under a single collection for organization.
+        bpp_collection = self._get_or_create_collection("BPPs")
+
+        imported_any = False
+        seen_keys: set[str] = set()
+
+        map_name = os.path.splitext(os.path.basename(map_path))[0]
+        tqdm_desc = f"[{map_index}/{map_total} B:{bpy.context.scene.umodel_use_vertex_bounds}] Importing BPPs from \"{map_name}\""
+
+        with utils.std_out_err_redirect_tqdm() as orig_stdout:
+            for entity in tqdm.tqdm(json_object,
+                                    desc=tqdm_desc,
+                                    file=orig_stdout,
+                                    dynamic_ncols=True,
+                                    ascii=True):
+                try:
+                    if entity.get("Type") != "LevelInstanceComponent":
+                        continue
+                    if entity.get("Name") != "Root":
+                        continue
+
+                    outer = (entity.get("Outer") or "")
+                    if not outer.startswith("BPP_"):
+                        continue
+
+                    template = entity.get("Template") or {}
+                    obj_path = template.get("ObjectPath") or ""
+                    if not obj_path:
+                        continue
+
+                    obj_path = strip_objectpath_trailing_dotnum(str(obj_path))
+
+                    props = entity.get("Properties") or {}
+                    loc = props.get("RelativeLocation") or {}
+                    rot = props.get("RelativeRotation") or {}
+
+                    # Convert UE cm -> Blender meters and flip Y (matches StaticMesh import)
+                    x = float(loc.get("X", 0.0)) / 100.0
+                    y = float(loc.get("Y", 0.0)) / -100.0
+                    z = float(loc.get("Z", 0.0)) / 100.0
+
+                    pos_vec = mu.Vector((x, y, z))
+                    if not is_within_import_bounds(pos_vec):
+                        continue
+
+                    # Convert UE rot degrees -> Blender euler radians (XYZ) with sign flips
+                    r_roll = math.radians(float(rot.get("Roll", 0.0)))
+                    r_pitch = math.radians(-float(rot.get("Pitch", 0.0)))
+                    r_yaw = math.radians(-float(rot.get("Yaw", 0.0)))
+
+                    # Dedupe across multi-UMAP bounds import: same asset path + same transform.
+                    key = f"{obj_path}|{round(x,4)},{round(y,4)},{round(z,4)}|{round(r_roll,4)},{round(r_pitch,4)},{round(r_yaw,4)}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+
+                    # Resolve BPP json path from template ObjectPath
+                    rel = os.path.normpath(str(obj_path).lstrip('/'))
+                    bpp_json_path = os.path.join(umodel_export_dir, rel) + ".json"
+                    if not os.path.isfile(bpp_json_path):
+                        utils.verbose_print(f"[BPP] Missing BPP json: {bpp_json_path}")
+                        continue
+
+                    bpp_base_name = os.path.basename(obj_path)
+                    root_name = self._unique_object_name(bpp_base_name)
+                    root = bpy.data.objects.new(root_name, None)
+                    root.empty_display_type = 'PLAIN_AXES'
+                    root.rotation_mode = 'XYZ'
+                    # Important: keep root at identity while building/parenting children.
+                    # We'll apply the placement transform AFTER parenting so children follow the root.
+                    root.location = (0.0, 0.0, 0.0)
+                    root.rotation_euler = mu.Euler((0.0, 0.0, 0.0), 'XYZ')
+                    bpp_collection.objects.link(root)
+# Persist info for later tooling
+                    try:
+                        root["_umodel_bpp_object_path"] = obj_path
+                        root["_umodel_bpp_json_path"] = bpp_json_path
+                        root["_umodel_source_umap"] = map_name
+                        root["_umodel_ue_relative_location"] = json.dumps(loc, ensure_ascii=False)
+                        root["_umodel_ue_relative_rotation"] = json.dumps(rot, ensure_ascii=False)
+                    except Exception:
+                        pass
+
+                    # Build the BPP contents and parent under root
+                    with open(bpp_json_path, mode='r', encoding='utf-8') as f:
+                        bpp_json = json.load(f)
+
+                    if not isinstance(bpp_json, list):
+                        continue
+
+                    for bpp_ent in bpp_json:
+                        ent_type = bpp_ent.get("Type")
+                        if not ent_type or ent_type not in StaticMesh.static_mesh_types:
+                            continue
+
+                        static_mesh = StaticMesh(bpp_json, bpp_ent, ent_type)
+                        if static_mesh.invalid:
+                            continue
+
+                        obj = self._load_asset(
+                            context=context,
+                            asset_dir=asset_dir,
+                            asset_path=static_mesh.asset_path,
+                            umodel_export_dir=umodel_export_dir,
+                            load=True,
+                            db=db,
+                            game_profile=game_profile
+                        )
+
+                        if not obj:
+                            continue
+
+                        created = static_mesh.link_object_instance(
+                            self,
+                            obj,
+                            bpp_collection,
+                            umodel_export_dir,
+                            asset_dir,
+                            game_profile,
+                            db=db
+                        )
+
+                        # Parent every created object under the root.
+                        # IMPORTANT: keep world-space when parenting. Setting matrix_parent_inverse
+                        # alone can snap children to the parent if their basis isn't preserved.
+                        for child in created:
+                            try:
+                                world_mtx = child.matrix_world.copy()
+                                child.parent = root
+                                child.matrix_parent_inverse = root.matrix_world.inverted()
+                                child.matrix_world = world_mtx
+                            except Exception:
+                                pass
+
+                        imported_any = True
+
+                    # After all children are parented, apply the placement transform to the root
+                    # so the whole BPP moves together (UE-style LevelInstance).
+                    try:
+                        root.location = (x, y, z)
+                        root.rotation_euler = mu.Euler((r_roll, r_pitch, r_yaw), 'XYZ')
+                    except Exception:
+                        pass
+
+                except Exception:
+                    # Never let a single bad entity kill the import
+                    continue
+
+        # Post-import repair on the BPP collection (same concept as BPP builder)
+        if imported_any:
+            try:
+                self._post_import_reload_and_reapply(
+                    collection_name=bpp_collection.name,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=game_profile,
+                    apply_override_materials=getattr(self, 'apply_override_materials', True)
+                )
+            except Exception as e:
+                utils.verbose_print(f"[umodel_tools] Warning: BPP-only post-import repair failed: {e}")
+
+        return imported_any
+
     def _load_base_slots_from_mesh_json(self,
                                        obj: bpy.types.Object,
                                        umodel_export_dir: str,

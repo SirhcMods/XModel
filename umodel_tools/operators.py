@@ -417,6 +417,8 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
 
+        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+
         # Apply general scene import options
         try:
             self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
@@ -444,8 +446,9 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
         scene.umodel_umap_scan_results.clear()
         scene.umodel_umap_scan_index = 0
 
-        # Lazy import to avoid circular import issues / heavy import cost
-        from .map_importer import StaticMesh  # pylint: disable=import-outside-toplevel
+        # Lazy imports to avoid circular import issues / heavy import cost
+        from .map_importer import StaticMesh, is_within_import_bounds  # pylint: disable=import-outside-toplevel
+        from mathutils import Vector  # pylint: disable=import-outside-toplevel
 
         # Pre-count json files for progress reporting
         json_files = []
@@ -486,34 +489,67 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                 if not isinstance(json_obj, list):
                     continue
 
-                # If any StaticMesh/ISM/HISM instance is in bounds, record the map once.
-                for entity in json_obj:
-                    entity_type = entity.get("Type")
-                    if entity_type not in StaticMesh.static_mesh_types:
-                         continue
+                # If any matching entity is in bounds, record the map once.
+                if only_bpps:
+                    for entity in json_obj:
+                        try:
+                            if entity.get("Type") != "LevelInstanceComponent":
+                                continue
+                            if entity.get("Name") != "Root":
+                                continue
 
-                    try:
-                        static_mesh = StaticMesh(json_obj, entity, entity_type)
-                        if static_mesh.invalid:
+                            outer = entity.get("Outer", "") or ""
+                            if not outer.startswith("BPP_"):
+                                continue
+
+                            props = entity.get("Properties") or {}
+                            loc = props.get("RelativeLocation") or {}
+                            # Convert UE cm -> Blender meters and flip Y to match existing importer.
+                            pos = Vector((
+                                float(loc.get("X", 0.0)) / 100.0,
+                                float(loc.get("Y", 0.0)) / -100.0,
+                                float(loc.get("Z", 0.0)) / 100.0,
+                            ))
+
+                            if is_within_import_bounds(pos):
+                                item = scene.umodel_umap_scan_results.add()
+                                item.map_name = os.path.splitext(os.path.basename(json_path))[0]
+                                item.map_path = json_path
+                                matches += 1
+                                break
+                        except Exception:
+                            continue
+                else:
+                    for entity in json_obj:
+                        entity_type = entity.get("Type")
+                        if entity_type not in StaticMesh.static_mesh_types:
                             continue
 
-                        # Reuse your existing bounds logic
-                        if utils.static_mesh_has_instance_in_bounds(static_mesh):
-                            item = scene.umodel_umap_scan_results.add()
-                            item.map_name = os.path.splitext(os.path.basename(json_path))[0]
-                            item.map_path = json_path
-                            matches += 1
-                            break
+                        try:
+                            static_mesh = StaticMesh(json_obj, entity, entity_type)
+                            if static_mesh.invalid:
+                                continue
 
-                    except Exception:
-                        # Never let a single bad entity kill the scan
-                        continue
+                            # Reuse your existing bounds logic
+                            if utils.static_mesh_has_instance_in_bounds(static_mesh):
+                                item = scene.umodel_umap_scan_results.add()
+                                item.map_name = os.path.splitext(os.path.basename(json_path))[0]
+                                item.map_path = json_path
+                                matches += 1
+                                break
+
+                        except Exception:
+                            # Never let a single bad entity kill the scan
+                            continue
 
             context.window_manager.progress_end()
         finally:
             scene.umodel_use_vertex_bounds = False
 
-        self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
+        if only_bpps:
+            self.report({'INFO'}, f"UMAP scan complete (BPP-only): {matches} / {total} maps with BPPs within bounds")
+        else:
+            self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
         return {'FINISHED'}
 
 
@@ -768,6 +804,8 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
     def execute(self, context):
         scene = context.scene
 
+        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+
         # Apply general scene import options
         try:
             self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
@@ -815,19 +853,31 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
 
         db = asset_db.AssetDB(asset_dir)
 
-        # Import exactly one map using the same internal importer your menu operator uses
+        # Import exactly one map. If BPP-only mode is enabled, only build placed BPPs.
         try:
             scene.umodel_use_vertex_bounds = True
-            ok = self._import_map(
-                context=context,
-                map_path=map_path,
-                umodel_export_dir=umodel_export_dir,
-                asset_dir=asset_dir,
-                game_profile=profile.game,
-                db=db,
-                map_index=1,
-                map_total=1
-            )
+            if only_bpps:
+                ok = self._import_bpps_from_map(
+                    context=context,
+                    map_path=map_path,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    db=db,
+                    map_index=1,
+                    map_total=1
+                )
+            else:
+                ok = self._import_map(
+                    context=context,
+                    map_path=map_path,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    db=db,
+                    map_index=1,
+                    map_total=1
+                )
         finally:
             scene.umodel_use_vertex_bounds = False
 
@@ -848,6 +898,18 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
     def execute(self, context):
         scene = context.scene
+
+        # Apply general scene import options
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            pass
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            pass
+
+        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")
@@ -894,16 +956,29 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                 if not os.path.isfile(map_path):
                     continue
 
-                ok = self._import_map(
-                    context=context,
-                    map_path=map_path,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    db=db,
-                    map_index=1,
-                    map_total=1
-                )
+
+                if only_bpps:
+                    ok = self._import_bpps_from_map(
+                        context=context,
+                        map_path=map_path,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=profile.game,
+                        db=db,
+                        map_index=i,
+                        map_total=total
+                    )
+                else:
+                    ok = self._import_map(
+                        context=context,
+                        map_path=map_path,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=profile.game,
+                        db=db,
+                        map_index=i,
+                        map_total=total
+                    )
 			
                 if ok:
                     imported += 1

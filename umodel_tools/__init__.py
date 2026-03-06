@@ -96,6 +96,12 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type):
     bpy.types.Scene.umodel_max_x = bpy.props.FloatProperty(name="Max X")
     bpy.types.Scene.umodel_min_y = bpy.props.FloatProperty(name="Min Y")
     bpy.types.Scene.umodel_max_y = bpy.props.FloatProperty(name="Max Y")
+
+    bpy.types.Scene.umodel_import_bounds_only_bpps = bpy.props.BoolProperty(
+        name="Import only BPPs",
+        description="When enabled, bounds scan/import will only consider placed BPP LevelInstances (BPP_*)",
+        default=False
+    )
 	
     bpy.types.Scene.umodel_umap_scan_dir = bpy.props.StringProperty(
         name="UMAP JSON Directory",
@@ -155,6 +161,8 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_max_x
     del bpy.types.Scene.umodel_min_y
     del bpy.types.Scene.umodel_max_y
+
+    del bpy.types.Scene.umodel_import_bounds_only_bpps
 
     del bpy.types.Scene.umodel_umap_scan_dir
     del bpy.types.Scene.umodel_umap_scan_results

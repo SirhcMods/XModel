@@ -133,6 +133,11 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         col.prop(scene, "umodel_max_x")
         col.prop(scene, "umodel_min_y")
         col.prop(scene, "umodel_max_y")
+
+        # Optional mode: only import placed BPP LevelInstances
+        if hasattr(scene, "umodel_import_bounds_only_bpps"):
+            col.separator()
+            col.prop(scene, "umodel_import_bounds_only_bpps")
 		
         box = layout.box()
         box.label(text="Path to UMAPS")
