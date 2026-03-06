@@ -468,6 +468,11 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
 
         try:
             scene.umodel_use_vertex_bounds = True
+            # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
+            # This is only used by the 'Import UMAPs with bounds' workflow.
+            self._bounds_dedupe_enabled = True
+            self._bounds_seen_keys = set()
+
             for idx, json_path in enumerate(json_files, start=1):
                 percent = (idx / total) * 100.0
 
@@ -544,6 +549,12 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
 
             context.window_manager.progress_end()
         finally:
+            # Clear bounds de-dupe state for this operator session
+            try:
+                self._bounds_dedupe_enabled = False
+                self._bounds_seen_keys = set()
+            except Exception:
+                pass
             scene.umodel_use_vertex_bounds = False
 
         if only_bpps:
@@ -868,6 +879,11 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
                     map_total=1
                 )
             else:
+                # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
+                # This is only used by the 'Import UMAPs with bounds' workflow.
+                self._bounds_dedupe_enabled = True
+                self._bounds_seen_keys = set()
+
                 ok = self._import_map(
                     context=context,
                     map_path=map_path,
@@ -879,6 +895,12 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
                     map_total=1
                 )
         finally:
+            # Clear bounds de-dupe state for this operator session
+            try:
+                self._bounds_dedupe_enabled = False
+                self._bounds_seen_keys = set()
+            except Exception:
+                pass
             scene.umodel_use_vertex_bounds = False
 
         db.save_db()
@@ -942,6 +964,11 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
         try:
             scene.umodel_use_vertex_bounds = True
+            # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
+            # This is only used by the 'Import UMAPs with bounds' workflow.
+            self._bounds_dedupe_enabled = True
+            self._bounds_seen_keys = set()
+
             imported = 0
             for i, item in enumerate(scene.umodel_umap_scan_results, start=1):
                 map_path = item.map_path
@@ -985,6 +1012,12 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
             context.window_manager.progress_end()
         finally:
+            # Clear bounds de-dupe state for this operator session
+            try:
+                self._bounds_dedupe_enabled = False
+                self._bounds_seen_keys = set()
+            except Exception:
+                pass
             scene.umodel_use_vertex_bounds = False
 
         db.save_db()
