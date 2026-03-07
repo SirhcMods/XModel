@@ -73,8 +73,8 @@ def register():
 
     try:
         auto_load.register()
-        from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result
-        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result)		
+        from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result
+        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result)		
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
@@ -86,7 +86,27 @@ def unregister():
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 
-def register_bounds_props(umap_result_pg_type, bpp_result_pg_type):
+def _prop_category_items(self, context):
+    scene = getattr(context, "scene", None) if context is not None else None
+    if scene is None:
+        return [("__ALL__", "All", "Show props from all categories")]
+
+    items = [("__ALL__", "All", "Show props from all categories")]
+    cats = []
+    try:
+        for item in getattr(scene, "umodel_prop_scan_results", []):
+            cat = str(getattr(item, "category", "") or "")
+            if cat and cat not in cats:
+                cats.append(cat)
+    except Exception:
+        pass
+
+    for cat in sorted(cats, key=lambda x: x.lower()):
+        items.append((cat, cat, f"Show props in category: {cat}"))
+    return items
+
+
+def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_pg_type):
     bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
         name="Import Within Map Bounds",
         description="Only import actors within the calculated vertex bounds",
@@ -126,6 +146,26 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type):
         type=bpp_result_pg_type
     )
     bpy.types.Scene.umodel_bpp_scan_index = bpy.props.IntProperty(default=0)
+
+
+
+    bpy.types.Scene.umodel_prop_scan_dir = bpy.props.StringProperty(
+        name="Prop Directory",
+        description="Folder containing prop .psk/.pskx files with adjacent .json descriptors (scanned recursively)",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_prop_scan_dir"),
+    )
+    bpy.types.Scene.umodel_prop_scan_results = bpy.props.CollectionProperty(
+        type=prop_result_pg_type
+    )
+    bpy.types.Scene.umodel_prop_scan_index = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.umodel_prop_category = bpy.props.EnumProperty(
+        name="Category",
+        description="First-level subfolder under the Prop Directory used to filter scanned props",
+        items=_prop_category_items,
+        default=0
+    )
 
     bpy.types.Scene.umodel_bpp_apply_override_materials = bpy.props.BoolProperty(
         name="Use OverrideMaterials from BPP",
@@ -171,6 +211,11 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_bpp_scan_dir
     del bpy.types.Scene.umodel_bpp_scan_results
     del bpy.types.Scene.umodel_bpp_scan_index
+    del bpy.types.Scene.umodel_prop_scan_dir
+    del bpy.types.Scene.umodel_prop_scan_results
+    del bpy.types.Scene.umodel_prop_scan_index
+    del bpy.types.Scene.umodel_prop_category
+
     del bpy.types.Scene.umodel_bpp_apply_override_materials
     del bpy.types.Scene.umodel_apply_override_materials
     del bpy.types.Scene.umodel_load_pbr_maps

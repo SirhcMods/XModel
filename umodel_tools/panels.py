@@ -1,6 +1,16 @@
 import bpy
 
 from .preferences import get_addon_preferences
+from . import game_profiles
+
+
+def _profile_feature_enabled(feature_name: str) -> bool:
+    prefs = get_addon_preferences()
+    profile = prefs.get_active_profile() if prefs else None
+    if profile is None:
+        return False
+    impl = game_profiles.GAME_HANDLERS.get(profile.game)
+    return bool(getattr(impl, feature_name, False)) if impl else False
 
 
 class UMODELTOOLS_PT_asset(bpy.types.Panel):
@@ -197,6 +207,88 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
 
         row = box.row(align=True)
         row.operator("umodel.build_bpp_selected", text="Build", icon='PLAY')
+
+
+
+
+class UMODEL_PT_prop_builder(bpy.types.Panel):
+    bl_label = "Prop Builder"
+    bl_idname = "UMODEL_PT_prop_builder"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 4
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _profile_feature_enabled("ENABLE_PROP_BUILDER")
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        box = layout.box()
+        row = box.row(align=True)
+        row.prop(scene, "umodel_prop_scan_dir", text="")
+        row.operator("umodel.scan_prop_dir", text="Scan", icon='VIEWZOOM')
+
+        box.prop(scene, "umodel_prop_category", text="Category")
+
+        box.template_list(
+            "UMODELTOOLS_UL_prop_scan_results",
+            "",
+            scene,
+            "umodel_prop_scan_results",
+            scene,
+            "umodel_prop_scan_index",
+            rows=12
+        )
+
+        row = box.row(align=True)
+        row.operator("umodel.clear_prop_scan_results", text="Clear", icon='X')
+
+        row = box.row(align=True)
+        row.operator("umodel.import_prop_selected", text="Import Selected", icon='IMPORT')
+        row.operator("umodel.import_prop_all", text="Import All", icon='PLAY')
+
+
+class UMODELTOOLS_PG_prop_scan_result(bpy.types.PropertyGroup):
+    selected: bpy.props.BoolProperty(name="Selected", default=False)
+    asset_name: bpy.props.StringProperty(name="Asset")
+    asset_path: bpy.props.StringProperty(name="Asset Path")
+    json_path: bpy.props.StringProperty(name="JSON Path")
+    mesh_path: bpy.props.StringProperty(name="Mesh Path")
+    category: bpy.props.StringProperty(name="Category")
+    category_root: bpy.props.StringProperty(name="Category Root")
+
+
+class UMODELTOOLS_UL_prop_scan_results(bpy.types.UIList):
+    bl_idname = "UMODELTOOLS_UL_prop_scan_results"
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
+        row = layout.row(align=True)
+        row.prop(item, "selected", text="", emboss=False, icon='CHECKBOX_HLT' if item.selected else 'CHECKBOX_DEHLT')
+        row.label(text=item.asset_name)
+
+    def draw_filter(self, context, layout):
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="")
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        flags = []
+        cat = getattr(context.scene, "umodel_prop_category", "__ALL__")
+        needle = (self.filter_name or "").strip().lower()
+        bitflag = self.bitflag_filter_item
+        for item in items:
+            show = True
+            if cat not in {"", "__ALL__"}:
+                show = str(getattr(item, "category", "")) == cat
+            if show and needle:
+                show = needle in str(getattr(item, "asset_name", "")).lower()
+            flags.append(bitflag if show else 0)
+        return flags, []
 
 
 class UMODELTOOLS_PG_bpp_scan_result(bpy.types.PropertyGroup):

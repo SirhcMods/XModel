@@ -10,6 +10,8 @@ import lark
 
 
 GAME_NAME = "Generic"
+ENABLE_PROP_BUILDER = False
+
 GAME_DESCRIPTION = "Provides basic support for any Unreal Engine game"
 
 

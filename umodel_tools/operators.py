@@ -8,6 +8,7 @@ import tqdm.contrib
 import bpy
 import bpy_extras.io_utils
 import json
+from pathlib import Path
 import mathutils as mu
 
 from . import utils
@@ -33,6 +34,94 @@ def _resolve_dir_path(value: str) -> str:
 
 def _get_object_aabb_verts(obj: bpy.types.Object) -> list[tuple[float, float, float]]:
     return [obj.matrix_world @ mu.Vector(corner) for corner in obj.bound_box]
+
+
+def _profile_feature_enabled(feature_name: str) -> bool:
+    prefs = preferences.get_addon_preferences()
+    profile = prefs.get_active_profile() if prefs else None
+    if profile is None:
+        return False
+    impl = getattr(__import__("umodel_tools.game_profiles", fromlist=['GAME_HANDLERS']), 'GAME_HANDLERS', {}).get(profile.game)
+    return bool(getattr(impl, feature_name, False)) if impl else False
+
+
+def _strip_objectpath_trailing_dotnum(obj_path: str) -> str:
+    if not obj_path:
+        return ""
+    head, dot, tail = obj_path.rpartition('.')
+    if dot and tail.isdigit():
+        return head
+    return obj_path
+
+
+def _extract_prop_asset_path_from_json(json_path: str) -> tuple[str, str] | tuple[None, None]:
+    """Return (asset_name, asset_path_without_dotnum) from a mesh json beside a PSK/PSKX."""
+    try:
+        with open(json_path, mode='r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return None, None
+
+    entries = data if isinstance(data, list) else [data]
+    static_mesh_ent = None
+    for ent in entries:
+        if isinstance(ent, dict) and ent.get('Type') == 'StaticMesh':
+            static_mesh_ent = ent
+            break
+    if static_mesh_ent is None:
+        return None, None
+
+    asset_name = str(static_mesh_ent.get('Name') or Path(json_path).stem)
+
+    obj_path = ""
+    outer = static_mesh_ent.get('Outer')
+    if isinstance(outer, dict):
+        obj_path = str(outer.get('ObjectPath') or "")
+
+    if not obj_path:
+        props = static_mesh_ent.get('Properties')
+        if isinstance(props, dict):
+            aud = props.get('AssetUserData')
+            if isinstance(aud, list):
+                for item in aud:
+                    if isinstance(item, dict):
+                        candidate = item.get('ObjectPath')
+                        if candidate:
+                            obj_path = str(candidate)
+                            break
+
+    if not obj_path:
+        return asset_name, asset_name
+
+    return asset_name, _strip_objectpath_trailing_dotnum(obj_path).lstrip('/\\')
+
+
+def _derive_prop_import_asset_path(item, umodel_export_dir: str) -> str:
+    """Resolve the asset path to pass into AssetImporter._load_asset().
+
+    Prefer the scanned mesh path relative to the global UModel export dir, because the
+    JSON-derived ObjectPath can be incomplete for some prop dumps. Fall back to the
+    JSON-derived asset path if needed. Returns a path without extension.
+    """
+    mesh_path = str(getattr(item, 'mesh_path', '') or '')
+    if mesh_path:
+        mesh_noext = os.path.splitext(os.path.normpath(mesh_path))[0]
+        export_root = os.path.normpath(umodel_export_dir)
+        try:
+            common = os.path.commonpath([export_root, mesh_noext])
+        except ValueError:
+            common = ''
+        if common == export_root:
+            rel_noext = os.path.relpath(mesh_noext, export_root)
+            if rel_noext and rel_noext not in {'.', ''}:
+                return rel_noext.lstrip('/\\')
+
+    asset_path = str(getattr(item, 'asset_path', '') or '')
+    if asset_path:
+        return os.path.normpath(asset_path).lstrip('/\\')
+
+    asset_name = str(getattr(item, 'asset_name', '') or '')
+    return os.path.splitext(asset_name)[0]
 
 
 class UMODELTOOLS_OT_recover_unreal_asset(asset_importer.AssetImporter, bpy.types.Operator):
@@ -804,6 +893,362 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
         db.save_db()
 
         return self._op_message('INFO', f"Built {built}/{len(selected_items)} BPP(s).")
+
+
+class UMODEL_OT_scan_prop_dir(bpy.types.Operator):
+    bl_idname = "umodel.scan_prop_dir"
+    bl_label = "Scan Prop Directory"
+    bl_description = "Scan a directory for prop .psk/.pskx files with matching .json files"
+
+    @classmethod
+    def poll(cls, _context):
+        return _profile_feature_enabled("ENABLE_PROP_BUILDER")
+
+    def execute(self, context):
+        scene = context.scene
+
+        if not hasattr(scene, "umodel_prop_scan_results"):
+            self.report({'ERROR'}, "Prop scan results property not registered. Re-enable addon or restart Blender.")
+            return {'CANCELLED'}
+
+        scan_dir = _resolve_dir_path(getattr(scene, 'umodel_prop_scan_dir', ''))
+        if not scan_dir:
+            self.report({'ERROR'}, "Set a Prop directory first")
+            return {'CANCELLED'}
+        if not os.path.isdir(scan_dir):
+            self.report({'ERROR'}, f"Prop directory does not exist: {scan_dir}")
+            return {'CANCELLED'}
+
+        scene.umodel_prop_scan_results.clear()
+        scene.umodel_prop_scan_index = 0
+
+        found = 0
+
+        for root, _, files in os.walk(scan_dir):
+            lower_files = {f.lower(): f for f in files}
+            for filename in files:
+                base, ext = os.path.splitext(filename)
+                if ext.lower() not in {'.psk', '.pskx'}:
+                    continue
+
+                json_name = lower_files.get((base + '.json').lower())
+                if not json_name:
+                    continue
+
+                json_path = os.path.join(root, json_name)
+                asset_name, asset_path = _extract_prop_asset_path_from_json(json_path)
+                if not asset_path:
+                    continue
+
+                rel_root = os.path.relpath(root, scan_dir)
+                category = rel_root.split(os.sep, 1)[0] if rel_root and rel_root != '.' else ''
+
+                item = scene.umodel_prop_scan_results.add()
+                item.selected = False
+                item.asset_name = asset_name or base
+                item.asset_path = asset_path
+                item.json_path = json_path
+                item.mesh_path = os.path.join(root, filename)
+                item.category = category
+                item.category_root = os.path.join(scan_dir, category) if category else scan_dir
+                found += 1
+
+        try:
+            scene.umodel_prop_category = '__ALL__'
+        except Exception:
+            pass
+
+        self.report({'INFO'}, f"Prop scan complete: found {found} asset(s)")
+        return {'FINISHED'}
+
+
+class UMODEL_OT_clear_prop_scan_results(bpy.types.Operator):
+    bl_idname = "umodel.clear_prop_scan_results"
+    bl_label = "Clear Prop Scan Results"
+    bl_description = "Clear the prop scan results list"
+
+    @classmethod
+    def poll(cls, _context):
+        return _profile_feature_enabled("ENABLE_PROP_BUILDER")
+
+    def execute(self, context):
+        scene = context.scene
+        scene.umodel_prop_scan_results.clear()
+        scene.umodel_prop_scan_index = 0
+        try:
+            scene.umodel_prop_category = "__ALL__"
+        except Exception:
+            pass
+        return {'FINISHED'}
+
+
+class UMODEL_OT_import_prop_selected(map_importer.MapImporter, bpy.types.Operator):
+    bl_idname = "umodel.import_prop_selected"
+    bl_label = "Import Selected Props"
+    bl_description = "Import selected props from the scanned directory"
+
+    @classmethod
+    def poll(cls, _context):
+        return _profile_feature_enabled("ENABLE_PROP_BUILDER")
+
+    def _get_or_create_collection(self, name: str) -> bpy.types.Collection:
+        coll = bpy.data.collections.get(name)
+        if coll is None:
+            coll = bpy.data.collections.new(name)
+            bpy.context.scene.collection.children.link(coll)
+        return coll
+
+    def _filtered_items(self, context):
+        scene = context.scene
+        category = str(getattr(scene, "umodel_prop_category", "__ALL__") or "__ALL__")
+        needle = ""
+        uilist = None
+        try:
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    uilist = None
+                    break
+        except Exception:
+            pass
+        uilist_cls = getattr(bpy.types, "UMODELTOOLS_UL_prop_scan_results", None)
+        try:
+            needle = str(getattr(uilist_cls, "filter_name", "") or "").strip().lower()
+        except Exception:
+            needle = ""
+        items = []
+        for it in scene.umodel_prop_scan_results:
+            if category not in {"", "__ALL__"} and str(getattr(it, "category", "")) != category:
+                continue
+            if needle and needle not in str(getattr(it, "asset_name", "")).lower():
+                continue
+            items.append(it)
+        return items
+
+    def _resolve_selected_items(self, context):
+        scene = context.scene
+        filtered = self._filtered_items(context)
+        selected = [it for it in filtered if getattr(it, "selected", False)]
+        if not selected and filtered:
+            idx = int(scene.umodel_prop_scan_index)
+            if 0 <= idx < len(scene.umodel_prop_scan_results):
+                active = scene.umodel_prop_scan_results[idx]
+                if active in filtered:
+                    selected = [active]
+        return selected
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        profile = preferences.get_addon_preferences().get_active_profile()
+        if profile is None:
+            return self._op_message('ERROR', "You need to have an active game profile selected.")
+
+        umodel_export_dir = _resolve_dir_path(profile.umodel_export_dir)
+        if not umodel_export_dir or not os.path.isdir(umodel_export_dir):
+            return self._op_message('ERROR', f"Invalid UModel export dir: {umodel_export_dir}")
+
+        asset_dir = _resolve_dir_path(profile.asset_dir)
+        if not asset_dir or not os.path.isdir(asset_dir):
+            return self._op_message('ERROR', f"Invalid asset dir: {asset_dir}")
+
+        scene = context.scene
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            self.apply_override_materials = False
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            self.load_pbr_maps = True
+
+        selected_items = self._resolve_selected_items(context)
+
+        if not selected_items:
+            return self._op_message('ERROR', "No props selected.")
+
+        db = asset_db.AssetDB(asset_dir)
+        built = 0
+        touched_collections = set()
+
+        with utils.std_out_err_redirect_tqdm() as orig_stdout:
+            for item in tqdm.tqdm(selected_items,
+                                  desc='Importing Props',
+                                  file=orig_stdout,
+                                  dynamic_ncols=True,
+                                  ascii=True):
+                asset_path = _derive_prop_import_asset_path(item, umodel_export_dir)
+                obj = self._load_asset(
+                    context=context,
+                    asset_dir=asset_dir,
+                    asset_path=asset_path,
+                    umodel_export_dir=umodel_export_dir,
+                    load=True,
+                    db=db,
+                    game_profile=profile.game
+                )
+                if obj is None:
+                    self._warn_print(f"Warning: Failed to import prop asset {asset_path}")
+                    continue
+
+                inst_name = str(item.asset_name or Path(asset_path).stem)
+                unique_name = inst_name
+                if bpy.data.objects.get(unique_name) is not None:
+                    i = 1
+                    while bpy.data.objects.get(f"{inst_name}.{i:03d}") is not None:
+                        i += 1
+                    unique_name = f"{inst_name}.{i:03d}"
+
+                instance = bpy.data.objects.new(unique_name, obj.data)
+                instance.umodel_tools_asset.enabled = True
+                instance.umodel_tools_asset.asset_path = asset_path
+                instance["_umodel_mesh_object_path"] = asset_path
+                instance["_umodel_prop_source_json"] = str(item.json_path)
+                coll_name = str(getattr(item, "category", "") or "Props")
+                import_collection = self._get_or_create_collection(coll_name)
+                import_collection.objects.link(instance)
+                touched_collections.add(import_collection.name)
+                built += 1
+
+        db.save_db()
+
+        for collection_name in sorted(touched_collections):
+            try:
+                self._post_import_reload_and_reapply(
+                    collection_name=collection_name,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    apply_override_materials=self.apply_override_materials
+                )
+            except Exception as e:
+                self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
+
+        self._print_unrecognized_textures()
+        return self._op_message('INFO', f"Imported {built}/{len(selected_items)} prop asset(s).")
+
+
+class UMODEL_OT_import_prop_all(map_importer.MapImporter, bpy.types.Operator):
+    bl_idname = "umodel.import_prop_all"
+    bl_label = "Import All Props"
+    bl_description = "Import all scanned props matching the current category/search filter"
+
+    @classmethod
+    def poll(cls, _context):
+        return _profile_feature_enabled("ENABLE_PROP_BUILDER")
+
+    def _get_or_create_collection(self, name: str) -> bpy.types.Collection:
+        coll = bpy.data.collections.get(name)
+        if coll is None:
+            coll = bpy.data.collections.new(name)
+            bpy.context.scene.collection.children.link(coll)
+        return coll
+
+    def _filtered_items(self, context):
+        scene = context.scene
+        category = str(getattr(scene, "umodel_prop_category", "__ALL__") or "__ALL__")
+        needle = ""
+        uilist_cls = getattr(bpy.types, "UMODELTOOLS_UL_prop_scan_results", None)
+        try:
+            needle = str(getattr(uilist_cls, "filter_name", "") or "").strip().lower()
+        except Exception:
+            needle = ""
+
+        items = []
+        for it in scene.umodel_prop_scan_results:
+            if category not in {"", "__ALL__"} and str(getattr(it, "category", "")) != category:
+                continue
+            if needle and needle not in str(getattr(it, "asset_name", "")).lower():
+                continue
+            items.append(it)
+        return items
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        profile = preferences.get_addon_preferences().get_active_profile()
+        if profile is None:
+            return self._op_message('ERROR', "You need to have an active game profile selected.")
+
+        umodel_export_dir = _resolve_dir_path(profile.umodel_export_dir)
+        if not umodel_export_dir or not os.path.isdir(umodel_export_dir):
+            return self._op_message('ERROR', f"Invalid UModel export dir: {umodel_export_dir}")
+
+        asset_dir = _resolve_dir_path(profile.asset_dir)
+        if not asset_dir or not os.path.isdir(asset_dir):
+            return self._op_message('ERROR', f"Invalid asset dir: {asset_dir}")
+
+        scene = context.scene
+        try:
+            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            self.apply_override_materials = False
+        try:
+            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            self.load_pbr_maps = True
+
+        selected_items = self._filtered_items(context)
+        if not selected_items:
+            return self._op_message('ERROR', "No props found in the current category/filter.")
+
+        db = asset_db.AssetDB(asset_dir)
+        built = 0
+        touched_collections = set()
+
+        with utils.std_out_err_redirect_tqdm() as orig_stdout:
+            for item in tqdm.tqdm(selected_items,
+                                  desc='Importing All Props',
+                                  file=orig_stdout,
+                                  dynamic_ncols=True,
+                                  ascii=True):
+                asset_path = _derive_prop_import_asset_path(item, umodel_export_dir)
+                obj = self._load_asset(
+                    context=context,
+                    asset_dir=asset_dir,
+                    asset_path=asset_path,
+                    umodel_export_dir=umodel_export_dir,
+                    load=True,
+                    db=db,
+                    game_profile=profile.game
+                )
+                if obj is None:
+                    self._warn_print(f"Warning: Failed to import prop asset {asset_path}")
+                    continue
+
+                inst_name = str(item.asset_name or Path(asset_path).stem)
+                unique_name = inst_name
+                if bpy.data.objects.get(unique_name) is not None:
+                    i = 1
+                    while bpy.data.objects.get(f"{inst_name}.{i:03d}") is not None:
+                        i += 1
+                    unique_name = f"{inst_name}.{i:03d}"
+
+                instance = bpy.data.objects.new(unique_name, obj.data)
+                instance.umodel_tools_asset.enabled = True
+                instance.umodel_tools_asset.asset_path = asset_path
+                instance["_umodel_mesh_object_path"] = asset_path
+                instance["_umodel_prop_source_json"] = str(item.json_path)
+                coll_name = str(getattr(item, "category", "") or "Props")
+                import_collection = self._get_or_create_collection(coll_name)
+                import_collection.objects.link(instance)
+                touched_collections.add(import_collection.name)
+                built += 1
+
+        db.save_db()
+
+        for collection_name in sorted(touched_collections):
+            try:
+                self._post_import_reload_and_reapply(
+                    collection_name=collection_name,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    apply_override_materials=self.apply_override_materials
+                )
+            except Exception as e:
+                self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
+
+        self._print_unrecognized_textures()
+        return self._op_message('INFO', f"Imported {built}/{len(selected_items)} prop asset(s).")
+
+    def _resolve_selected_items(self, context):
+        return self._filtered_items(context)
 
 
 class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):
