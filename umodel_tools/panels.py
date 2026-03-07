@@ -83,6 +83,10 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
     bl_order = 2
     bl_options = {'DEFAULT_CLOSED'}
 
+    @classmethod
+    def poll(cls, context):
+        return _profile_feature_enabled("ENABLE_IMPORT_UMAP_WITH_BOUNDS")
+
     def draw(self, context):
         layout = self.layout
         scene = context.scene
@@ -135,6 +139,10 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
     bl_category = 'XModel'
     bl_order = 3
     bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _profile_feature_enabled("ENABLE_BPP_BUILDER")
 
     def draw(self, context):
         layout = self.layout
