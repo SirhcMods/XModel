@@ -74,7 +74,9 @@ def register():
     try:
         auto_load.register()
         from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result
-        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result)		
+        from .preferences import load_profiles_from_disk
+        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result)
+        load_profiles_from_disk()
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
 

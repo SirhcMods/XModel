@@ -44,6 +44,8 @@ class UMODEL_PT_general(bpy.types.Panel):
         col.separator()
         col.operator("umodel_tools.list_action", icon='TRIA_UP', text="").action = 'UP'
         col.operator("umodel_tools.list_action", icon='TRIA_DOWN', text="").action = 'DOWN'
+        col.separator()
+        col.operator("umodel_tools.list_action", icon='FILE_TICK', text="").action = 'SAVE'
 
         profile = prefs.get_active_profile()
         if profile is None:
@@ -55,7 +57,7 @@ class UMODEL_PT_general(bpy.types.Panel):
         layout.prop(profile, "game")
         layout.prop(profile, "umodel_export_dir")
         layout.prop(profile, "asset_dir")
-        layout.prop(context.scene, "umodel_asset_path_filter")
+        layout.prop(profile, "asset_path_filter")
 
 
 class UMODEL_PT_import_umap(bpy.types.Panel):
