@@ -158,3 +158,4 @@ cython_debug/
 !/umodel_tools/third_party/io_import_scene_unreal_psa_psk_280.py
 /docs/build
 /docs/build/*
+/umodel_tools/.vs

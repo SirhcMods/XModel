@@ -9,29 +9,6 @@ from . import PACKAGE_NAME
 from . import game_profiles
 
 
-def _resolve_dir_path(value: str) -> str:
-    """Resolve Blender-style paths to a normalized absolute directory path.
-
-    Blender may store paths as blend-relative ("//..."). Always resolve those
-    to an OS absolute path for stability.
-    """
-    if not value:
-        return ""
-
-    # Resolve Blender's "//" relative paths (relative to the .blend location)
-    value = bpy.path.abspath(value)
-
-    # Normalize and collapse .. segments
-    value = os.path.normpath(os.path.abspath(value))
-
-    # Blender on Windows can sometimes yield paths like "\\C:\\..." or "/C:/...".
-    # Strip the leading slash/backslash in that specific case.
-    if os.name == 'nt' and len(value) >= 3 and value[0] in ('/', '\\') and value[1].isalpha() and value[2] == ':':
-        value = value[1:]
-
-    return value
-
-
 def _make_abs_update(prop_name: str):
     """Create an update callback that forces a directory property to absolute."""
 
@@ -44,6 +21,7 @@ def _make_abs_update(prop_name: str):
         if not cur:
             return
 
+        from umodel_tools.utils import _resolve_dir_path
         abs_p = _resolve_dir_path(cur)
         if abs_p and abs_p != cur:
             setattr(self, "_umodeltools_path_update_lock", True)
@@ -159,6 +137,7 @@ def load_profiles_from_disk() -> int:
         if game_id in supported_game_ids:
             profile.game = game_id
 
+        from umodel_tools.utils import _resolve_dir_path
         profile.umodel_export_dir = _resolve_dir_path(data.get("ExportDirectory", "")) if data.get("ExportDirectory") else ""
         profile.asset_dir = _resolve_dir_path(data.get("AssetDirectory", "")) if data.get("AssetDirectory") else ""
         profile.asset_path_filter = data.get("ImportFilterDirectory", "") or ""

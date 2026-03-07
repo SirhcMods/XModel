@@ -197,3 +197,15 @@ def _profile_feature_enabled(feature_name: str) -> bool:
         return False
     impl = getattr(__import__("umodel_tools.game_profiles", fromlist=['GAME_HANDLERS']), 'GAME_HANDLERS', {}).get(profile.game)
     return bool(getattr(impl, feature_name, False)) if impl else False
+
+def _resolve_dir_path(value: str) -> str:
+    """Resolve Blender-style paths (including //) to a normalized absolute OS path."""
+    if not value:
+        return ""
+    value = bpy.path.abspath(value)
+    value = os.path.normpath(os.path.abspath(value))
+    # Blender on Windows can yield paths like "\\C:\\..." or "/C:/..."; strip that leading slash.
+    if os.name == 'nt' and len(value) >= 3 and value[0] in ('/', '\\') and value[1].isalpha() and value[2] == ':':
+        value = value[1:]
+    return value
+
