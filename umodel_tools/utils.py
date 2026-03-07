@@ -189,3 +189,11 @@ def static_mesh_has_instance_in_bounds(static_mesh) -> bool:
             return True
 
     return False
+
+def _profile_feature_enabled(feature_name: str) -> bool:
+    prefs = preferences.get_addon_preferences()
+    profile = prefs.get_active_profile() if prefs else None
+    if profile is None:
+        return False
+    impl = getattr(__import__("umodel_tools.game_profiles", fromlist=['GAME_HANDLERS']), 'GAME_HANDLERS', {}).get(profile.game)
+    return bool(getattr(impl, feature_name, False)) if impl else False

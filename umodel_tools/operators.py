@@ -18,6 +18,7 @@ from . import map_importer
 from . import preferences
 
 from .utils import get_selected_vertex_world_bounds
+from .utils import _profile_feature_enabled
 
 
 def _resolve_dir_path(value: str) -> str:
@@ -34,15 +35,6 @@ def _resolve_dir_path(value: str) -> str:
 
 def _get_object_aabb_verts(obj: bpy.types.Object) -> list[tuple[float, float, float]]:
     return [obj.matrix_world @ mu.Vector(corner) for corner in obj.bound_box]
-
-
-def _profile_feature_enabled(feature_name: str) -> bool:
-    prefs = preferences.get_addon_preferences()
-    profile = prefs.get_active_profile() if prefs else None
-    if profile is None:
-        return False
-    impl = getattr(__import__("umodel_tools.game_profiles", fromlist=['GAME_HANDLERS']), 'GAME_HANDLERS', {}).get(profile.game)
-    return bool(getattr(impl, feature_name, False)) if impl else False
 
 
 def _strip_objectpath_trailing_dotnum(obj_path: str) -> str:

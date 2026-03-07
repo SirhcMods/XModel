@@ -12,11 +12,11 @@ import lark
 
 
 GAME_NAME = "MindsEye"
-ENABLE_PROP_BUILDER = True
-
 GAME_DESCRIPTION = "MindsEye (2025) by BARB"
 
-ENABLE_COLOR_PALETTE_UNWRAPPER = True  # Enables per-instance palette tint unwrapper (MindsEye only)
+# Profile Features
+ENABLE_PROP_BUILDER = True
+ENABLE_COLOR_PALETTE_UNWRAPPER = True
 
 
 

@@ -2,15 +2,7 @@ import bpy
 
 from .preferences import get_addon_preferences
 from . import game_profiles
-
-
-def _profile_feature_enabled(feature_name: str) -> bool:
-    prefs = get_addon_preferences()
-    profile = prefs.get_active_profile() if prefs else None
-    if profile is None:
-        return False
-    impl = game_profiles.GAME_HANDLERS.get(profile.game)
-    return bool(getattr(impl, feature_name, False)) if impl else False
+from .utils import _profile_feature_enabled
 
 
 class UMODELTOOLS_PT_asset(bpy.types.Panel):

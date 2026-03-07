@@ -19,6 +19,7 @@ from . import fmodel_json_parser
 from . import game_profiles
 from . import color_palette_unwrapper  # MindsEye palette tint support (optional)
 from .utils import static_mesh_has_instance_in_bounds
+from .utils import _profile_feature_enabled
 
 
 def split_object_path(object_path):
@@ -37,14 +38,6 @@ def split_object_path(object_path):
 
 _RE_TRAILING_OBJPATH_DOTNUM = re.compile(r"\.(\d+)$")  # ends with .0/.1/etc
 
-
-
-def _is_palette_unwrapper_enabled(game_profile) -> bool:
-    """True if the active game profile enables MindsEye palette tint unwrapper.
-
-    In most call sites `game_profile` is the profile key string (e.g. 'mindseye')."""
-    impl = game_profiles.GAME_HANDLERS.get(game_profile) if isinstance(game_profile, str) else game_profile
-    return bool(getattr(impl, 'ENABLE_COLOR_PALETTE_UNWRAPPER', False) or getattr(impl, 'use_color_palette_unwrapper', False))
 
 def strip_objectpath_trailing_dotnum(object_path: str) -> str:
     """Strip trailing ".<digits>" from UE ObjectPath while preserving inner periods."""
@@ -351,7 +344,7 @@ def _timer_post_import_batch_worker() -> t.Optional[float]:
     if end >= len(objs):
         # MindsEye: tint relink per collection (only when enabled)
         try:
-            use_unwrapper = _is_palette_unwrapper_enabled(task["game_profile"])
+            use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
             if use_unwrapper:
                 # Re-evaluate objects from the collection directly (safer than cached names)
                 def _iter_objects_recursive(c: bpy.types.Collection):
@@ -720,7 +713,7 @@ class StaticMesh:
                 new_obj.rotation_mode = 'XYZ'
 
                 # MindsEye palette tint support: persist instance identity + tint props
-                use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+                use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
                 if use_unwrapper:
                     try:
                         new_obj['_umodel_source_outer'] = self.entity_name
@@ -820,7 +813,7 @@ class StaticMesh:
 
 
         # MindsEye: final tint relink pass (only when enabled)
-        use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+        use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
         if use_unwrapper:
             try:
                 color_palette_unwrapper.relink_tinted_materials_by_tint_id(objects)
@@ -1801,7 +1794,7 @@ class MapImporter(asset_importer.AssetImporter):
 
 
         # MindsEye: re-link tinted materials after library reload (only when enabled)
-        use_unwrapper = _is_palette_unwrapper_enabled(game_profile)
+        use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
         if use_unwrapper:
             try:
                 objs = list(_iter_objects_recursive(coll))

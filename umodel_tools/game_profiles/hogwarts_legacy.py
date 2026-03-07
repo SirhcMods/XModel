@@ -13,8 +13,6 @@ import lark
 
 
 GAME_NAME = "Hogwarts Legacy"
-ENABLE_PROP_BUILDER = False
-
 GAME_DESCRIPTION = "Hogwarts Legacy (2023) by Portkey Games"
 
 
