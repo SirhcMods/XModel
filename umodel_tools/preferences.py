@@ -194,10 +194,3 @@ class UMODELTOOLS_AP_addon_preferences(bpy.types.AddonPreferences):
             return self.profiles[self.active_profile_index]
         except IndexError:
             return None
-
-    def draw(self, context: bpy.types.Context):
-        layout = self.layout
-        layout.prop(self, "verbose")
-
-        if context.preferences.view.show_developer_ui:
-            layout.prop(self, "debug")
