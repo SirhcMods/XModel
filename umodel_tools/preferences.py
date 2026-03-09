@@ -65,6 +65,8 @@ def _sync_scene_filter_from_active_profile(context: t.Optional[bpy.types.Context
     addon_prefs = get_addon_preferences()
     profile = addon_prefs.get_active_profile()
     scene.umodel_asset_path_filter = getattr(profile, "asset_path_filter", "") if profile else ""
+    if hasattr(scene, "umodel_asset_keyword_filter"):
+        scene.umodel_asset_keyword_filter = getattr(profile, "asset_keyword_filter", "") if profile else ""
 
 
 def _update_profile_asset_filter(self, context):
@@ -76,6 +78,8 @@ def _update_profile_asset_filter(self, context):
     active_profile = addon_prefs.get_active_profile()
     if active_profile and active_profile.as_pointer() == self.as_pointer():
         scene.umodel_asset_path_filter = self.asset_path_filter
+        if hasattr(scene, "umodel_asset_keyword_filter"):
+            scene.umodel_asset_keyword_filter = getattr(self, "asset_keyword_filter", "") or ""
 
 
 def _update_active_profile_index(self, context):
@@ -95,6 +99,7 @@ def save_profile_to_disk(profile: 'UMODELTOOLS_PG_game_profile') -> Path:
         f"ExportDirectory={profile.umodel_export_dir or ''}",
         f"AssetDirectory={profile.asset_dir or ''}",
         f"ImportFilterDirectory={profile.asset_path_filter or ''}",
+        f"ImportFilterKeywords={getattr(profile, 'asset_keyword_filter', '') or ''}",
     ]
     profile_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return profile_path
@@ -141,6 +146,7 @@ def load_profiles_from_disk() -> int:
         profile.umodel_export_dir = _resolve_dir_path(data.get("ExportDirectory", "")) if data.get("ExportDirectory") else ""
         profile.asset_dir = _resolve_dir_path(data.get("AssetDirectory", "")) if data.get("AssetDirectory") else ""
         profile.asset_path_filter = data.get("ImportFilterDirectory", "") or ""
+        profile.asset_keyword_filter = data.get("ImportFilterKeywords", "") or ""
 
         loaded_count += 1
 
@@ -187,6 +193,13 @@ class UMODELTOOLS_PG_game_profile(bpy.types.PropertyGroup):
         name="Import Filter Directory",
         description="Only import meshes whose Unreal asset path starts with this prefix",
         subtype='DIR_PATH',
+        default="",
+        update=_update_profile_asset_filter,
+    )
+
+    asset_keyword_filter: bpy.props.StringProperty(
+        name="Filter Keywords",
+        description="Optional keyword filter for mesh names. Use commas to match any of multiple keywords",
         default="",
         update=_update_profile_asset_filter,
     )
@@ -251,6 +264,7 @@ class UMODELTOOLS_OT_actions(bpy.types.Operator):
 
             elif self.action == 'SAVE' and active_profile is not None:
                 active_profile.asset_path_filter = getattr(context.scene, "umodel_asset_path_filter", "") or ""
+                active_profile.asset_keyword_filter = getattr(context.scene, "umodel_asset_keyword_filter", "") or ""
                 profile_path = save_profile_to_disk(active_profile)
                 self.report({'INFO'}, f"Saved profile to {profile_path}")
 

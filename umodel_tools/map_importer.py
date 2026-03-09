@@ -65,6 +65,27 @@ def strip_ue_quoted_name(s: str) -> str:
     return s.strip()
 
 
+def _parse_name_filter_keywords(raw_keywords: str) -> list[str]:
+    if not raw_keywords:
+        return []
+    return [part.strip().lower() for part in str(raw_keywords).replace(';', ',').split(',') if part.strip()]
+
+
+def _static_mesh_matches_keywords(static_mesh: 'StaticMesh', keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+
+    candidates = {
+        getattr(static_mesh, 'entity_name', '') or '',
+        getattr(static_mesh, 'asset_name', '') or '',
+        getattr(static_mesh, 'asset_path', '') or '',
+        os.path.basename(getattr(static_mesh, 'asset_path', '') or ''),
+    }
+
+    haystacks = [c.lower() for c in candidates if c]
+    return any(any(keyword in hay for hay in haystacks) for keyword in keywords)
+
+
 def _extract_ref_path(value: t.Any) -> str:
     """Extract an Unreal-style object path from common FModel reference shapes."""
     if not value:
@@ -1961,6 +1982,11 @@ class MapImporter(asset_importer.AssetImporter):
                             if not key or key not in self._umodel_psk_name_filter_set:
                                 continue
 
+                        keyword_filter_raw = getattr(bpy.context.scene, "umodel_asset_keyword_filter", "") or ""
+                        keyword_filters = _parse_name_filter_keywords(keyword_filter_raw)
+                        if keyword_filters and not _static_mesh_matches_keywords(static_mesh, keyword_filters):
+                            continue
+
                         if not static_mesh_has_instance_in_bounds(static_mesh):
                             continue
 
@@ -2003,7 +2029,7 @@ class MapImporter(asset_importer.AssetImporter):
                                                 "Invalid property.")
                             continue
 
-                        light.import_light(import_collection)
+                        #light.import_light(import_collection)
 
         # Post-import: batch library reload/material repair so bulk UMAP imports don't freeze Blender.
         _post_import_enqueue(

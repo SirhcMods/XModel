@@ -196,6 +196,12 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         default=""
     )
 
+    bpy.types.Scene.umodel_asset_keyword_filter = bpy.props.StringProperty(
+        name="Filter Keywords",
+        description="Optional keyword filter for mesh names. Use commas to match any of multiple keywords",
+        default=""
+    )
+
 
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
@@ -223,6 +229,7 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_load_pbr_maps
 
     del bpy.types.Scene.umodel_asset_path_filter
+    del bpy.types.Scene.umodel_asset_keyword_filter
 
 __all__ = (
     'bl_info',

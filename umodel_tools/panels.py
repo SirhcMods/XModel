@@ -58,6 +58,8 @@ class UMODEL_PT_general(bpy.types.Panel):
         layout.prop(profile, "umodel_export_dir")
         layout.prop(profile, "asset_dir")
         layout.prop(profile, "asset_path_filter")
+        if hasattr(context.scene, "umodel_asset_keyword_filter"):
+            layout.prop(context.scene, "umodel_asset_keyword_filter")
 
 
 class UMODEL_PT_import_umap(bpy.types.Panel):
