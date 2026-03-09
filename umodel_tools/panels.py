@@ -220,6 +220,31 @@ class UMODEL_PT_prop_builder(bpy.types.Panel):
         row.operator("umodel.import_prop_all", text="Import All", icon='PLAY')
 
 
+
+
+class UMODEL_PT_material_builder(bpy.types.Panel):
+    bl_label = "Material Builder"
+    bl_idname = "UMODEL_PT_material_builder"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 5
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _profile_feature_enabled("ENABLE_MATERIAL_BUILDER")
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        col = layout.column(align=True)
+        col.prop(scene, "umodel_material_builder_root", text="Search Root Dir")
+        col.label(text=f"Selected mesh objects: {sum(1 for obj in context.selected_objects if getattr(obj, 'type', None) == 'MESH')}")
+        col.operator("umodel.build_selected_materials", text="Build Materials", icon='MATERIAL')
+
+
 class UMODELTOOLS_PG_prop_scan_result(bpy.types.PropertyGroup):
     selected: bpy.props.BoolProperty(name="Selected", default=False)
     asset_name: bpy.props.StringProperty(name="Asset")

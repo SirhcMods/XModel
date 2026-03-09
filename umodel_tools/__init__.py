@@ -203,6 +203,15 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
     )
 
 
+    bpy.types.Scene.umodel_material_builder_root = bpy.props.StringProperty(
+        name="Search Root Dir",
+        description="Optional root directory to search for mesh JSON files. If empty, the active profile Export Directory will be used",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_material_builder_root"),
+    )
+
+
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
     del bpy.types.Scene.umodel_min_x
@@ -230,6 +239,7 @@ def unregister_bounds_props():
 
     del bpy.types.Scene.umodel_asset_path_filter
     del bpy.types.Scene.umodel_asset_keyword_filter
+    del bpy.types.Scene.umodel_material_builder_root
 
 __all__ = (
     'bl_info',

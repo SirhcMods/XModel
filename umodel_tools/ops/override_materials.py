@@ -96,6 +96,20 @@ def ensure_object_slot_overrides(obj: bpy.types.Object) -> None:
     obj["_umodel_override_slots_ready"] = 1
 
 
+def _material_has_valid_nodes(mat: t.Optional[bpy.types.Material]) -> bool:
+    if mat is None:
+        return False
+    try:
+        if not getattr(mat, "use_nodes", False):
+            return False
+        node_tree = getattr(mat, "node_tree", None)
+        if node_tree is None:
+            return False
+        return len(node_tree.nodes) > 0
+    except Exception:
+        return False
+
+
 def get_or_link_material_from_objectpath(importer: t.Any,
                                          material_name: str,
                                          material_object_path: str,
@@ -113,8 +127,13 @@ def get_or_link_material_from_objectpath(importer: t.Any,
         return None
 
     mat = bpy.data.materials.get(material_name)
-    if mat is not None:
+    if _material_has_valid_nodes(mat):
         return mat
+    if mat is not None:
+        try:
+            importer._warn_print(f'[MaterialBuilder] Rebuilding invalid existing material: {material_name}')
+        except Exception:
+            print(f'[MaterialBuilder] Rebuilding invalid existing material: {material_name}')
 
     # Convert UE object path -> library relative path (no ext, strip trailing .0/.1/etc)
     stripped = strip_objectpath_trailing_dotnum(material_object_path)
@@ -137,8 +156,13 @@ def get_or_link_material_from_objectpath(importer: t.Any,
 
         # Already linked from that library?
         existing = utils.linked_libraries_search(material_lib_path, bpy.types.Material)
-        if existing is not None:
+        if _material_has_valid_nodes(existing):
             return existing
+        if existing is not None:
+            try:
+                importer._warn_print(f'[MaterialBuilder] Re-linking invalid library material: {existing.name}')
+            except Exception:
+                print(f'[MaterialBuilder] Re-linking invalid library material: {existing.name}')
 
         # Link it
         with utils.redirect_cstdout():
