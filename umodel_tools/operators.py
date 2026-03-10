@@ -7,6 +7,7 @@ import tqdm
 import tqdm.contrib
 import bpy
 import bpy_extras.io_utils
+import importlib.util
 import json
 from pathlib import Path
 import mathutils as mu
@@ -161,6 +162,29 @@ def _derive_prop_import_asset_path(item, umodel_export_dir: str) -> str:
 
     asset_name = str(getattr(item, 'asset_name', '') or '')
     return os.path.splitext(asset_name)[0]
+
+def _load_landscape_compiler_module():
+    """
+    Loads:
+        umodel_tools/game_profiles/mindseye/landscape_material_compiler.py
+
+    using a direct file loader so we do not conflict with the existing
+    game_profiles/mindseye.py module.
+    """
+    compiler_path = Path(__file__).parent / "game_profiles" / "mindseye" / "landscape_material_compiler.py"
+
+    if not compiler_path.is_file():
+        raise FileNotFoundError(f"Landscape compiler not found: {compiler_path}")
+
+    module_name = "umodel_tools._mindseye_landscape_material_compiler"
+
+    spec = importlib.util.spec_from_file_location(module_name, compiler_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not create module spec for: {compiler_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class UMODEL_OT_scan_bpp_dir(bpy.types.Operator):
@@ -1276,3 +1300,19 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
         self.report({'INFO'}, f"Imported {imported}/{total} scanned maps.")
         return {'FINISHED'}
+
+class UMODEL_OT_build_landscape_materials(bpy.types.Operator):
+    bl_idname = "umodel.build_landscape_materials"
+    bl_label = "Build Landscape Materials"
+    bl_description = "Build landscape materials for selected landscape meshes"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            compiler = _load_landscape_compiler_module()
+            return compiler.compile_selected_landscapes(context, report_cb=self.report)
+        except Exception as exc:
+            self.report({'ERROR'}, f"Landscape material build failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}

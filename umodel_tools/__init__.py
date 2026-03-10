@@ -211,6 +211,22 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         update=_make_abs_update("umodel_material_builder_root"),
     )
 
+    bpy.types.Scene.umodel_landscape_umap_dir = bpy.props.StringProperty(
+        name="Landscape UMAP Folder",
+        description="Folder containing exported landscape UMAP JSON files",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_landscape_umap_dir"),
+    )
+
+    bpy.types.Scene.umodel_landscape_weightmap_dir = bpy.props.StringProperty(
+        name="Weightmap Folder",
+        description="Folder containing weightmap PNGs in UMAP-id subfolders",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_landscape_weightmap_dir"),
+    )
+
 
 def unregister_bounds_props():
     del bpy.types.Scene.umodel_use_vertex_bounds
@@ -240,6 +256,9 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_asset_path_filter
     del bpy.types.Scene.umodel_asset_keyword_filter
     del bpy.types.Scene.umodel_material_builder_root
+
+    del bpy.types.Scene.umodel_landscape_umap_dir
+    del bpy.types.Scene.umodel_landscape_weightmap_dir
 
 __all__ = (
     'bl_info',

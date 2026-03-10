@@ -307,3 +307,27 @@ class UMODELTOOLS_UL_umap_scan_results(bpy.types.UIList):
     def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
         # item is UMODELTOOLS_PG_umap_scan_result
         layout.label(text=item.map_name)
+
+class UMODEL_PT_landscape_material_compiler(bpy.types.Panel):
+    bl_label = "Landscape Material Compiler"
+    bl_idname = "UMODEL_PT_landscape_material_compiler"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'XModel'
+    bl_order = 6
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _profile_feature_enabled("ENABLE_LANDSCAPE_MATERIAL_COMPILER")
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        col = layout.column(align=True)
+        col.prop(scene, "umodel_landscape_umap_dir", text="UMAP Folder")
+        col.prop(scene, "umodel_landscape_weightmap_dir", text="Weightmap Folder")
+
+        layout.separator()
+        layout.operator("umodel.build_landscape_materials", text="Build Material", icon='MATERIAL')
