@@ -23,6 +23,7 @@ from . import props_txt_parser
 from . import enums
 from . import game_profiles
 
+from .ops.bake_tints_to_attr import bake_tints_to_attr_on_selected
 from .utils import _profile_feature_enabled
 from .utils import _resolve_dir_path
 
@@ -1075,6 +1076,26 @@ class UMODEL_OT_build_selected_materials(asset_importer.AssetImporter, bpy.types
             return self._op_message('WARNING', msg)
 
         return self._op_message('INFO', f"Built materials for {built_count} selected object(s).")
+
+class UMODEL_OT_bake_tints_to_attr(bpy.types.Operator):
+    bl_idname = "umodel.bake_tints_to_attr"
+    bl_label = "Bake Tints to attr"
+    bl_description = "Bake palette tints to the BakedTint color attribute, convert palette materials to use it, then merge duplicate materials"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            processed_objects, converted_materials = bake_tints_to_attr_on_selected(context)
+            self.report(
+                {'INFO'},
+                f"Baked tints for {processed_objects} object(s), converted {converted_materials} material(s)"
+            )
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, f"Bake Tints to attr failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
 
 
 class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):

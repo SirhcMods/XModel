@@ -243,6 +243,8 @@ class UMODEL_PT_material_builder(bpy.types.Panel):
         col.prop(scene, "umodel_material_builder_root", text="Search Root Dir")
         col.label(text=f"Selected mesh objects: {sum(1 for obj in context.selected_objects if getattr(obj, 'type', None) == 'MESH')}")
         col.operator("umodel.build_selected_materials", text="Build Materials", icon='MATERIAL')
+        if _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER"):
+            col.operator("umodel.bake_tints_to_attr", text="Bake Tints to attr", icon='GROUP_VCOL')
 
 
 class UMODELTOOLS_PG_prop_scan_result(bpy.types.PropertyGroup):
