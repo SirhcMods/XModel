@@ -213,6 +213,12 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         default=""
     )
 
+    bpy.types.Scene.umodel_asset_ignore_folders = bpy.props.StringProperty(
+        name="Ignore Folders",
+        description="Optional folder names or keywords to ignore during import. Only used when Import Filter Path and Filter Keywords are both empty. Use commas to match any of multiple folders",
+        default=""
+    )
+
 
     bpy.types.Scene.umodel_material_builder_root = bpy.props.StringProperty(
         name="Search Root Dir",
@@ -268,6 +274,7 @@ def unregister_bounds_props():
 
     del bpy.types.Scene.umodel_asset_path_filter
     del bpy.types.Scene.umodel_asset_keyword_filter
+    del bpy.types.Scene.umodel_asset_ignore_folders
     del bpy.types.Scene.umodel_material_builder_root
 
     del bpy.types.Scene.umodel_landscape_umap_dir

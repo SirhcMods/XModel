@@ -86,6 +86,30 @@ def _static_mesh_matches_keywords(static_mesh: 'StaticMesh', keywords: list[str]
     return any(any(keyword in hay for hay in haystacks) for keyword in keywords)
 
 
+def _static_mesh_is_in_ignored_folders(static_mesh: 'StaticMesh', ignore_terms: list[str]) -> bool:
+    if not ignore_terms:
+        return False
+
+    asset_path = str(getattr(static_mesh, 'asset_path', '') or '')
+    if not asset_path:
+        return False
+
+    norm_path = asset_path.replace('\\', '/').lower()
+    segments = [seg for seg in norm_path.split('/') if seg]
+    dir_path = '/'.join(segments[:-1])
+
+    for term in ignore_terms:
+        token = str(term or '').strip().lower().replace('\\', '/').strip('/')
+        if not token:
+            continue
+        if token in segments:
+            return True
+        if dir_path and token in dir_path:
+            return True
+
+    return False
+
+
 def _extract_ref_path(value: t.Any) -> str:
     """Extract an Unreal-style object path from common FModel reference shapes."""
     if not value:
@@ -1405,6 +1429,14 @@ class MapImporter(asset_importer.AssetImporter):
                         if static_mesh.invalid:
                             continue
 
+                        asset_filter = bpy.context.scene.umodel_asset_path_filter.strip()
+                        keyword_filter_raw = getattr(bpy.context.scene, "umodel_asset_keyword_filter", "") or ""
+                        keyword_filters = _parse_name_filter_keywords(keyword_filter_raw)
+                        ignore_folder_raw = getattr(bpy.context.scene, "umodel_asset_ignore_folders", "") or ""
+                        ignore_folders = _parse_name_filter_keywords(ignore_folder_raw)
+                        if not asset_filter and not keyword_filters and ignore_folders and _static_mesh_is_in_ignored_folders(static_mesh, ignore_folders):
+                            continue
+
                         obj = self._load_asset(
                             context=context,
                             asset_dir=asset_dir,
@@ -2034,6 +2066,11 @@ class MapImporter(asset_importer.AssetImporter):
                         keyword_filter_raw = getattr(bpy.context.scene, "umodel_asset_keyword_filter", "") or ""
                         keyword_filters = _parse_name_filter_keywords(keyword_filter_raw)
                         if keyword_filters and not _static_mesh_matches_keywords(static_mesh, keyword_filters):
+                            continue
+
+                        ignore_folder_raw = getattr(bpy.context.scene, "umodel_asset_ignore_folders", "") or ""
+                        ignore_folders = _parse_name_filter_keywords(ignore_folder_raw)
+                        if not asset_filter and not keyword_filters and ignore_folders and _static_mesh_is_in_ignored_folders(static_mesh, ignore_folders):
                             continue
 
                         if not static_mesh_has_instance_in_bounds(static_mesh):
