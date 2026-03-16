@@ -766,26 +766,27 @@ class StaticMesh:
                     new_obj.matrix_world = self.parent_mtx @ mat_world
 
                 collection.objects.link(new_obj)
-                # Persist base slot names/material names for post-reload repair.
-                importer._persist_base_material_slots(new_obj)
-                # Some meshes arrive with blank/nameless slots even without OverrideMaterials so we repair them
-                importer._repair_base_material_slots(
-                    new_obj,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=game_profile,
-                    db=db,
-                    force_reassign=True
-                )
-                if getattr(importer, 'apply_override_materials', True):
-                    importer._apply_override_materials_to_object(
+                if getattr(importer, 'import_materials', True):
+                    # Persist base slot names/material names for post-reload repair.
+                    importer._persist_base_material_slots(new_obj)
+                    # Some meshes arrive with blank/nameless slots even without OverrideMaterials so we repair them
+                    importer._repair_base_material_slots(
                         new_obj,
-                        self.override_materials,
                         umodel_export_dir=umodel_export_dir,
                         asset_dir=asset_dir,
                         game_profile=game_profile,
-                        db=db
+                        db=db,
+                        force_reassign=True
                     )
+                    if getattr(importer, 'apply_override_materials', True):
+                        importer._apply_override_materials_to_object(
+                            new_obj,
+                            self.override_materials,
+                            umodel_export_dir=umodel_export_dir,
+                            asset_dir=asset_dir,
+                            game_profile=game_profile,
+                            db=db
+                        )
                 objects.append(new_obj)
 
         else:
@@ -818,30 +819,31 @@ class StaticMesh:
                 new_obj.matrix_world = self.parent_mtx @ trs.matrix_4x4
 
             collection.objects.link(new_obj)
-            # Persist base slot names/material names for post-reload repair.
-            importer._persist_base_material_slots(new_obj)
-            importer._repair_base_material_slots(
-                new_obj,
-                umodel_export_dir=umodel_export_dir,
-                asset_dir=asset_dir,
-                game_profile=game_profile,
-                db=db,
-                force_reassign=True
-            )
-            if getattr(importer, 'apply_override_materials', True):
-                importer._apply_override_materials_to_object(
+            if getattr(importer, 'import_materials', True):
+                # Persist base slot names/material names for post-reload repair.
+                importer._persist_base_material_slots(new_obj)
+                importer._repair_base_material_slots(
                     new_obj,
-                    self.override_materials,
                     umodel_export_dir=umodel_export_dir,
                     asset_dir=asset_dir,
                     game_profile=game_profile,
-                    db=db
+                    db=db,
+                    force_reassign=True
                 )
+                if getattr(importer, 'apply_override_materials', True):
+                    importer._apply_override_materials_to_object(
+                        new_obj,
+                        self.override_materials,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=game_profile,
+                        db=db
+                    )
             objects.append(new_obj)
 
 
         # MindsEye: final tint relink pass (only when enabled)
-        use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
+        use_unwrapper = getattr(importer, 'import_materials', True) and _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
         if use_unwrapper:
             try:
                 color_palette_unwrapper.relink_tinted_materials_by_tint_id(objects)
@@ -1178,6 +1180,12 @@ class MapImporter(asset_importer.AssetImporter):
         default=False
     )
 
+    import_materials: bpy.props.BoolProperty(
+        name="Import Materials",
+        description="If disabled, import meshes only and skip material build / override / tint work during import",
+        default=True
+    )
+
     def _encode_override_materials(self, override_materials: t.Optional[list[t.Optional[tuple[str, str]]]]) -> str:
         return override_ops.encode_override_materials(override_materials)
 
@@ -1447,7 +1455,7 @@ class MapImporter(asset_importer.AssetImporter):
                     continue
 
         # Post-import repair on the BPP collection (same concept as BPP builder)
-        if imported_any:
+        if imported_any and getattr(self, 'import_materials', True):
             try:
                 self._post_import_reload_and_reapply(
                     collection_name=bpp_collection.name,
@@ -1551,32 +1559,33 @@ class MapImporter(asset_importer.AssetImporter):
 
 
             # Ensure base materials exist/are linked so repair can assign them.
-            for e in out:
-                mn = e.get("mn", "")
-                op = e.get("op", "")
-                if not mn or not op:
-                    continue
-                if bpy.data.materials.get(mn) is not None:
-                    continue
+            if self.import_materials:
+                for e in out:
+                    mn = e.get("mn", "")
+                    op = e.get("op", "")
+                    if not mn or not op:
+                        continue
+                    if bpy.data.materials.get(mn) is not None:
+                        continue
 
-                # If Blender already has MI_Name.### because of name collisions,
-                # prefer reusing that instead of importing/linking a new one.
-                alt = None
-                prefix = mn + "."
-                for m in bpy.data.materials:
-                    if m.name.startswith(prefix) and m.name[len(prefix):].isdigit():
-                        alt = m
-                        break
-                if alt is not None:
-                    continue
-                self._get_or_link_material_from_objectpath(
-                    material_name=mn,
-                    material_object_path=op,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=game_profile,
-                    db=db
-                )
+                    # If Blender already has MI_Name.### because of name collisions,
+                    # prefer reusing that instead of importing/linking a new one.
+                    alt = None
+                    prefix = mn + "."
+                    for m in bpy.data.materials:
+                        if m.name.startswith(prefix) and m.name[len(prefix):].isdigit():
+                            alt = m
+                            break
+                    if alt is not None:
+                        continue
+                    self._get_or_link_material_from_objectpath(
+                        material_name=mn,
+                        material_object_path=op,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=game_profile,
+                        db=db
+                    )
 
             return out
         except Exception:
@@ -1740,7 +1749,7 @@ class MapImporter(asset_importer.AssetImporter):
                         if m.name.startswith(prefix) and m.name[len(prefix):].isdigit():
                             mat = m
                             break
-                if mat is None and desired_op:
+                if mat is None and desired_op and self.import_materials:
                     mat = self._get_or_link_material_from_objectpath(
                         material_name=desired_mn,
                         material_object_path=desired_op,
@@ -1780,6 +1789,9 @@ class MapImporter(asset_importer.AssetImporter):
         We persist each object's override list in a custom property, and re-apply after reload
         to eliminate the 'blank slot' cases.
         """
+        if not self.import_materials:
+            return None
+
         # 1) Reload all linked libraries (existing addon behavior)
         for lib in bpy.data.libraries:
             try:
@@ -2069,12 +2081,13 @@ class MapImporter(asset_importer.AssetImporter):
                         #light.import_light(import_collection)
 
         # Post-import: batch library reload/material repair so bulk UMAP imports don't freeze Blender.
-        _post_import_enqueue(
-            import_collection.name,
-            umodel_export_dir,
-            asset_dir,
-            game_profile,
-            getattr(self, 'apply_override_materials', True),
-        )
+        if getattr(self, 'import_materials', True):
+            _post_import_enqueue(
+                import_collection.name,
+                umodel_export_dir,
+                asset_dir,
+                game_profile,
+                getattr(self, 'apply_override_materials', True),
+            )
 
         return True

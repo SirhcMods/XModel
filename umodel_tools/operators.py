@@ -341,7 +341,7 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
                     )
                     imported_any = True
 
-        if imported_any:
+        if imported_any and self.import_materials:
             # Run the same post-import reload + re-apply step used by UMAP import.
             # This fixes cases where linked material pointers end up blank after linking.
             try:
@@ -376,16 +376,19 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
         # MapImporter.apply_override_materials is an operator property, so we must copy the
         # scene setting into the operator instance before we start importing/linking meshes.
         try:
+            self.import_materials = bool(getattr(scene, "umodel_import_materials", True))
+        except Exception:
+            self.import_materials = True
+        try:
             # Prefer unified General setting; fall back to legacy BPP-only toggle if present
-            self.apply_override_materials = bool(getattr(scene, "umodel_apply_override_materials", getattr(scene, "umodel_bpp_apply_override_materials", False)))
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, "umodel_apply_override_materials", getattr(scene, "umodel_bpp_apply_override_materials", False)))
         except Exception:
             # If anything goes wrong, fall back to not applying overrides.
             self.apply_override_materials = False
-
-            try:
-                self.load_pbr_maps = bool(getattr(scene, "umodel_load_pbr_maps", True))
-            except Exception:
-                pass
+        try:
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, "umodel_load_pbr_maps", True))
+        except Exception:
+            self.load_pbr_maps = True
 
         # build list of selected entries; if none checked, use active index
         selected_items = [it for it in scene.umodel_bpp_scan_results if getattr(it, "selected", False)]
@@ -573,11 +576,15 @@ class UMODEL_OT_import_prop_selected(map_importer.MapImporter, bpy.types.Operato
 
         scene = context.scene
         try:
-            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+            self.import_materials = bool(getattr(scene, 'umodel_import_materials', True))
+        except Exception:
+            self.import_materials = True
+        try:
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, 'umodel_apply_override_materials', False))
         except Exception:
             self.apply_override_materials = False
         try:
-            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, 'umodel_load_pbr_maps', True))
         except Exception:
             self.load_pbr_maps = True
 
@@ -631,17 +638,18 @@ class UMODEL_OT_import_prop_selected(map_importer.MapImporter, bpy.types.Operato
 
         db.save_db()
 
-        for collection_name in sorted(touched_collections):
-            try:
-                self._post_import_reload_and_reapply(
-                    collection_name=collection_name,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    apply_override_materials=self.apply_override_materials
-                )
-            except Exception as e:
-                self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
+        if self.import_materials:
+            for collection_name in sorted(touched_collections):
+                try:
+                    self._post_import_reload_and_reapply(
+                        collection_name=collection_name,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=profile.game,
+                        apply_override_materials=self.apply_override_materials
+                    )
+                except Exception as e:
+                    self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
 
         self._print_unrecognized_textures()
         return self._op_message('INFO', f"Imported {built}/{len(selected_items)} prop asset(s).")
@@ -697,11 +705,15 @@ class UMODEL_OT_import_prop_all(map_importer.MapImporter, bpy.types.Operator):
 
         scene = context.scene
         try:
-            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+            self.import_materials = bool(getattr(scene, 'umodel_import_materials', True))
+        except Exception:
+            self.import_materials = True
+        try:
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, 'umodel_apply_override_materials', False))
         except Exception:
             self.apply_override_materials = False
         try:
-            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, 'umodel_load_pbr_maps', True))
         except Exception:
             self.load_pbr_maps = True
 
@@ -754,17 +766,18 @@ class UMODEL_OT_import_prop_all(map_importer.MapImporter, bpy.types.Operator):
 
         db.save_db()
 
-        for collection_name in sorted(touched_collections):
-            try:
-                self._post_import_reload_and_reapply(
-                    collection_name=collection_name,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    apply_override_materials=self.apply_override_materials
-                )
-            except Exception as e:
-                self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
+        if self.import_materials:
+            for collection_name in sorted(touched_collections):
+                try:
+                    self._post_import_reload_and_reapply(
+                        collection_name=collection_name,
+                        umodel_export_dir=umodel_export_dir,
+                        asset_dir=asset_dir,
+                        game_profile=profile.game,
+                        apply_override_materials=self.apply_override_materials
+                    )
+                except Exception as e:
+                    self._warn_print(f"[umodel_tools] Warning: Prop post-import material repair failed for {collection_name}: {e}")
 
         self._print_unrecognized_textures()
         return self._op_message('INFO', f"Imported {built}/{len(selected_items)} prop asset(s).")
@@ -1123,13 +1136,17 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
 
         # Apply general scene import options
         try:
-            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+            self.import_materials = bool(getattr(scene, 'umodel_import_materials', True))
         except Exception:
-            pass
+            self.import_materials = True
         try:
-            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, 'umodel_apply_override_materials', False))
         except Exception:
-            pass
+            self.apply_override_materials = False
+        try:
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            self.load_pbr_maps = False if not getattr(self, 'import_materials', True) else True
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")
@@ -1233,13 +1250,17 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
         # Apply general scene import options
         try:
-            self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
+            self.import_materials = bool(getattr(scene, 'umodel_import_materials', True))
         except Exception:
-            pass
+            self.import_materials = True
         try:
-            self.load_pbr_maps = bool(getattr(scene, 'umodel_load_pbr_maps', True))
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, 'umodel_apply_override_materials', False))
         except Exception:
-            pass
+            self.apply_override_materials = False
+        try:
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            self.load_pbr_maps = False if not getattr(self, 'import_materials', True) else True
 
         include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
         self._bounds_parent_collection_name = _get_active_bound_parent_name(scene)

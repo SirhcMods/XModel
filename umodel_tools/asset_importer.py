@@ -21,6 +21,12 @@ class AssetImporter:
        Intended to be inherited a bpy.types.Operator subclass.
     """
 
+    import_materials: bpy.props.BoolProperty(
+        name="Import materials",
+        description="If disabled, meshes are imported with base material slots/placeholders only and all material build / override work is skipped",
+        default=True
+    )
+
     load_pbr_maps: bpy.props.BoolProperty(
         name="Load PBR textures",
         description="Load normal maps, specular, roughness, etc into materials. Experimental",
@@ -157,6 +163,16 @@ class AssetImporter:
 
         # remove original datablock
         bpy.data.images.remove(img, do_unlink=True)
+
+    def _get_or_create_placeholder_material(self, material_name: str) -> bpy.types.Material:
+        mat = bpy.data.materials.get(material_name)
+        if mat is None:
+            mat = bpy.data.materials.new(material_name)
+            try:
+                mat.use_nodes = False
+            except Exception:
+                pass
+        return mat
 
     def _import_material_to_library(self,
                                     material_name: str,
@@ -500,8 +516,12 @@ class AssetImporter:
                 material_path_local_no_ext = os.path.normpath(material_path_local_no_ext)
 
                 # remove leading separator
-                material_path_local_no_ext = material_path_local_no_ext[1:] \
-                    if material_path_local_no_ext.startswith(os.sep) else material_path_local_no_ext
+                material_path_local_no_ext = material_path_local_no_ext[1:]                     if material_path_local_no_ext.startswith(os.sep) else material_path_local_no_ext
+
+                if not self.import_materials:
+                    new_mat = self._get_or_create_placeholder_material(material_name)
+                    new_materials.append((new_mat, material_name))
+                    continue
 
                 material_lib_path = os.path.join(asset_library_dir, material_path_local_no_ext) + '.blend'
 
@@ -525,13 +545,12 @@ class AssetImporter:
                             new_mat = data_to.materials[0]
 
                 except FileNotFoundError as e:
-                    new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
-                    self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead. "
-                                     f"({e}).")
+                    new_mat = self._get_or_create_placeholder_material(material_name)
+                    self._warn_print(f'Warning: Material "{material_name}" failed to load, placeholder used instead. ({e}).')
 
                 except OSError:
-                    new_mat = bpy.data.materials.new(f"{material_name}_Placeholder")
-                    self._warn_print(f"Warning: Material \"{material_name}\" failed to load, placeholder used instead.")
+                    new_mat = self._get_or_create_placeholder_material(material_name)
+                    self._warn_print(f'Warning: Material "{material_name}" failed to load, placeholder used instead.')
 
                 new_materials.append((new_mat, material_name))
 

@@ -19,10 +19,16 @@ class UMODEL_PT_general(bpy.types.Panel):
         prefs = get_addon_preferences()
 
         col = layout.column(align=True)
+        if hasattr(scene, "umodel_import_materials"):
+            col.prop(scene, "umodel_import_materials")
         if hasattr(scene, "umodel_apply_override_materials"):
-            col.prop(scene, "umodel_apply_override_materials")
+            row = col.row()
+            row.enabled = bool(getattr(scene, "umodel_import_materials", True))
+            row.prop(scene, "umodel_apply_override_materials")
         if hasattr(scene, "umodel_load_pbr_maps"):
-            col.prop(scene, "umodel_load_pbr_maps")
+            row = col.row()
+            row.enabled = bool(getattr(scene, "umodel_import_materials", True))
+            row.prop(scene, "umodel_load_pbr_maps")
         # Verbose is an addon preference (global)
         col.prop(prefs, "verbose")
 

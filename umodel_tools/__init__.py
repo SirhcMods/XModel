@@ -182,6 +182,12 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
 
 
     # General import options (apply to single UMAP import, bounds import, and BPP builder)
+    bpy.types.Scene.umodel_import_materials = bpy.props.BoolProperty(
+        name="Import Materials",
+        description="When disabled, import meshes only and skip material import / override / tint work. Base material slots are still set up from the mesh JSON so materials can be built later.",
+        default=True
+    )
+
     bpy.types.Scene.umodel_apply_override_materials = bpy.props.BoolProperty(
         name="Use OverrideMaterials",
         description="Apply per-component OverrideMaterials when available (UMAP bounds import + single UMAP import + BPP builder)",
