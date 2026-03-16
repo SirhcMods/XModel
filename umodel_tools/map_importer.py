@@ -529,7 +529,8 @@ class StaticMesh:
     static_mesh_types = [
         'StaticMeshComponent',
         'InstancedStaticMeshComponent',
-        'HierarchicalInstancedStaticMeshComponent'
+        'HierarchicalInstancedStaticMeshComponent',
+        'FoliageInstancedStaticMeshComponent'
     ]
 
     entity_name: str = ""
@@ -555,6 +556,7 @@ class StaticMesh:
     def __init__(self, json_obj: t.Any, json_entity: t.Any, entity_type: str) -> None:
         self.entity_name = json_entity.get("Outer", 'Error')
         self.instance_transforms = []
+        self.is_foliage = (entity_type == 'FoliageInstancedStaticMeshComponent')
 
         if not (props := json_entity.get("Properties", None)):
             self.no_entity = True
@@ -601,7 +603,8 @@ class StaticMesh:
         if (is_visbile := props.get("bVisible", None)) is not None and not is_visbile:
             self.invisible = True
 
-        if ((parent := props.get("AttachParent", None)) is not None
+        if (not self.is_foliage
+           and (parent := props.get("AttachParent", None)) is not None
            and (obj_name := parent.get("ObjectName", None)) is not None):
             self.parent_mtx = get_parent_transform_matrix(json_obj, *parse_ue_object_name(obj_name))
 
@@ -627,25 +630,29 @@ class StaticMesh:
 
                 self.transform = trs
 
-            case 'InstancedStaticMeshComponent' | 'HierarchicalInstancedStaticMeshComponent':
+            case 'InstancedStaticMeshComponent' | 'HierarchicalInstancedStaticMeshComponent' | 'FoliageInstancedStaticMeshComponent':
                 self.is_instanced = True
 
-                if (instances := json_entity.get("PerInstanceSMData", None)) is None:
+                instances = json_entity.get("PerInstanceSMData", None)
+                if instances is None and isinstance(props, dict):
+                    instances = props.get("PerInstanceSMData", None)
+                if instances is None:
                     self.no_per_instance_data = True
                     return
 
                 trs = InstanceTransform()
 
-                if (pos := props.get("RelativeLocation", None)) is not None:
-                    trs.pos = (pos.get("X") / 100, pos.get("Y") / -100, pos.get("Z") / 100)
+                if not self.is_foliage:
+                    if (pos := props.get("RelativeLocation", None)) is not None:
+                        trs.pos = (pos.get("X") / 100, pos.get("Y") / -100, pos.get("Z") / 100)
 
-                if (rot := props.get("RelativeRotation", None)) is not None:
-                    trs.rot_euler = (math.radians(rot.get("Roll")),
-                                     math.radians(-rot.get("Pitch")),
-                                     math.radians(-rot.get("Yaw")))
+                    if (rot := props.get("RelativeRotation", None)) is not None:
+                        trs.rot_euler = (math.radians(rot.get("Roll")),
+                                         math.radians(-rot.get("Pitch")),
+                                         math.radians(-rot.get("Yaw")))
 
-                if (scale := props.get("RelativeScale3D", None)) is not None:
-                    trs.scale = (scale.get("X", 1), scale.get("Y", 1), scale.get("Z", 1))
+                    if (scale := props.get("RelativeScale3D", None)) is not None:
+                        trs.scale = (scale.get("X", 1), scale.get("Y", 1), scale.get("Z", 1))
 
                 self.transform = trs
 
@@ -1228,11 +1235,39 @@ class MapImporter(asset_importer.AssetImporter):
             i += 1
         return f"{base}.{i:03d}"
 
-    def _get_or_create_collection(self, name: str) -> bpy.types.Collection:
+    def _get_import_parent_collection(self) -> bpy.types.Collection:
+        """Return the collection new bounds imports should be parented under.
+
+        When importing through the bounds workflow, operators can set
+        ``self._bounds_parent_collection_name`` to the active bound name.
+        If unset, fall back to the scene root collection.
+        """
+        parent_name = str(getattr(self, "_bounds_parent_collection_name", "") or "").strip()
+        if not parent_name:
+            return bpy.context.scene.collection
+
+        col = bpy.data.collections.get(parent_name)
+        if col is None:
+            col = bpy.data.collections.new(parent_name)
+            bpy.context.scene.collection.children.link(col)
+        elif not any(child == col or getattr(child, "name", "") == col.name for child in bpy.context.scene.collection.children):
+            try:
+                bpy.context.scene.collection.children.link(col)
+            except Exception:
+                pass
+        return col
+
+    def _get_or_create_collection(self, name: str, parent_collection: t.Optional[bpy.types.Collection] = None) -> bpy.types.Collection:
         col = bpy.data.collections.get(name)
         if col is None:
             col = bpy.data.collections.new(name)
-            bpy.context.scene.collection.children.link(col)
+
+        parent = parent_collection or self._get_import_parent_collection()
+        if parent is not None and not any(child == col or getattr(child, "name", "") == col.name for child in parent.children):
+            try:
+                parent.children.link(col)
+            except Exception:
+                pass
         return col
 
     def _import_bpps_from_map(self,
@@ -1263,6 +1298,7 @@ class MapImporter(asset_importer.AssetImporter):
             return False
 
         # Put all BPP roots under a single collection for organization.
+        # In bounds workflow this collection lives under the active bound parent.
         bpp_collection = self._get_or_create_collection("BPPs")
 
         imported_any = False
@@ -1937,7 +1973,8 @@ class MapImporter(asset_importer.AssetImporter):
         json_filename = os.path.basename(map_path)
         import_collection = bpy.data.collections.new(json_filename)
 
-        bpy.context.scene.collection.children.link(import_collection)
+        parent_collection = self._get_import_parent_collection()
+        parent_collection.children.link(import_collection)
 
         with open(map_path, mode='r', encoding='utf-8') as file:
             json_object = json.load(file)

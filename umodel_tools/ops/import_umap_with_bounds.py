@@ -5,24 +5,60 @@ from .. import utils
 
 class UMODEL_OT_calculate_import_bounds(bpy.types.Operator):
     bl_idname = "umodel.calculate_import_bounds"
-    bl_label = "Calculate Import Bounds"
-    bl_description = "Calculate world-space bounds from selected vertices"
+    bl_label = "Generate Bound from Selection"
+    bl_description = "Create a named import bound from the selected verts / edges / faces"
 
     def execute(self, context):
         bounds = utils.get_selected_vertex_world_bounds()
 
         if not bounds:
-            self.report({'ERROR'}, "Select mesh vertices first")
+            self.report({'ERROR'}, "Select mesh verts, edges, or faces first")
             return {'CANCELLED'}
 
         scene = context.scene
-        scene.umodel_min_x = bounds["min_x"]
-        scene.umodel_max_x = bounds["max_x"]
-        scene.umodel_min_y = bounds["min_y"]
-        scene.umodel_max_y = bounds["max_y"]
+        bound_items = scene.umodel_import_bounds
 
-        self.report({'INFO'}, "Import bounds calculated from selection")
+        item = bound_items.add()
+        item.name = f"bound{len(bound_items) - 1}"
+        item.min_x = bounds["min_x"]
+        item.max_x = bounds["max_x"]
+        item.min_y = bounds["min_y"]
+        item.max_y = bounds["max_y"]
+        item.min_z = bounds["min_z"]
+        item.max_z = bounds["max_z"]
+        scene.umodel_import_bounds_index = len(bound_items) - 1
+
+        utils.apply_active_import_bound_to_scene(scene)
+
+        self.report({'INFO'}, f"Created import bound '{item.name}' from selection")
         return {'FINISHED'}
+
+class UMODEL_OT_remove_import_bound(bpy.types.Operator):
+    bl_idname = "umodel.remove_import_bound"
+    bl_label = "Remove Import Bound"
+    bl_description = "Remove the selected import bound"
+
+    def execute(self, context):
+        scene = context.scene
+        bounds = scene.umodel_import_bounds
+        idx = int(scene.umodel_import_bounds_index)
+
+        if idx < 0 or idx >= len(bounds):
+            self.report({'ERROR'}, "No import bound selected")
+            return {'CANCELLED'}
+
+        removed_name = bounds[idx].name
+        bounds.remove(idx)
+
+        if len(bounds) == 0:
+            scene.umodel_import_bounds_index = -1
+        else:
+            scene.umodel_import_bounds_index = min(idx, len(bounds) - 1)
+            utils.apply_active_import_bound_to_scene(scene)
+
+        self.report({'INFO'}, f"Removed import bound '{removed_name}'")
+        return {'FINISHED'}
+
 
 class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
     bl_idname = "umodel.scan_umap_bounds"
@@ -32,7 +68,11 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
 
-        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+        if not utils.apply_active_import_bound_to_scene(scene):
+            self.report({'ERROR'}, "Create and select an import bound first")
+            return {'CANCELLED'}
+
+        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
 
         # Apply general scene import options
         try:
@@ -110,7 +150,30 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                     continue
 
                 # If any matching entity is in bounds, record the map once.
-                if only_bpps:
+                matched = False
+
+                # First scan normal static-mesh-style actors.
+                for entity in json_obj:
+                    entity_type = entity.get("Type")
+                    if entity_type not in StaticMesh.static_mesh_types:
+                        continue
+
+                    try:
+                        static_mesh = StaticMesh(json_obj, entity, entity_type)
+                        if static_mesh.invalid:
+                            continue
+
+                        # Reuse existing bounds logic
+                        if utils.static_mesh_has_instance_in_bounds(static_mesh):
+                            matched = True
+                            break
+
+                    except Exception:
+                        # Never let a single bad entity kill the scan
+                        continue
+
+                # Optionally also scan placed BPP LevelInstances.
+                if not matched and include_bpps:
                     for entity in json_obj:
                         try:
                             if entity.get("Type") != "LevelInstanceComponent":
@@ -132,35 +195,16 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                             ))
 
                             if is_within_import_bounds(pos):
-                                item = scene.umodel_umap_scan_results.add()
-                                item.map_name = os.path.splitext(os.path.basename(json_path))[0]
-                                item.map_path = json_path
-                                matches += 1
+                                matched = True
                                 break
                         except Exception:
                             continue
-                else:
-                    for entity in json_obj:
-                        entity_type = entity.get("Type")
-                        if entity_type not in StaticMesh.static_mesh_types:
-                            continue
 
-                        try:
-                            static_mesh = StaticMesh(json_obj, entity, entity_type)
-                            if static_mesh.invalid:
-                                continue
-
-                            # Reuse your existing bounds logic
-                            if utils.static_mesh_has_instance_in_bounds(static_mesh):
-                                item = scene.umodel_umap_scan_results.add()
-                                item.map_name = os.path.splitext(os.path.basename(json_path))[0]
-                                item.map_path = json_path
-                                matches += 1
-                                break
-
-                        except Exception:
-                            # Never let a single bad entity kill the scan
-                            continue
+                if matched:
+                    item = scene.umodel_umap_scan_results.add()
+                    item.map_name = os.path.splitext(os.path.basename(json_path))[0]
+                    item.map_path = json_path
+                    matches += 1
 
             context.window_manager.progress_end()
         finally:
@@ -172,8 +216,8 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                 pass
             scene.umodel_use_vertex_bounds = False
 
-        if only_bpps:
-            self.report({'INFO'}, f"UMAP scan complete (BPP-only): {matches} / {total} maps with BPPs within bounds")
+        if include_bpps:
+            self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds (including BPPs)")
         else:
             self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
         return {'FINISHED'}

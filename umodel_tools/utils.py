@@ -141,12 +141,30 @@ def get_selected_vertex_world_bounds():
 
     xs, ys, zs = [], [], []
 
-    for v in mesh.vertices:
-        if v.select:
+    # Edit mode: support selected verts / edges / faces from the live BMesh.
+    if obj.mode == 'EDIT':
+        import bmesh
+        bm = bmesh.from_edit_mesh(mesh)
+        selected_verts = {v for v in bm.verts if v.select}
+        for e in bm.edges:
+            if e.select:
+                selected_verts.update(e.verts)
+        for f in bm.faces:
+            if f.select:
+                selected_verts.update(f.verts)
+
+        for v in selected_verts:
             wp = mat @ v.co
             xs.append(wp.x)
             ys.append(wp.y)
             zs.append(wp.z)
+    else:
+        for v in mesh.vertices:
+            if v.select:
+                wp = mat @ v.co
+                xs.append(wp.x)
+                ys.append(wp.y)
+                zs.append(wp.z)
 
     if not xs:
         return None
@@ -159,6 +177,29 @@ def get_selected_vertex_world_bounds():
         "min_z": min(zs),
         "max_z": max(zs),
     }
+
+
+def get_active_import_bound(scene):
+    bounds = getattr(scene, "umodel_import_bounds", None)
+    if bounds is None or len(bounds) == 0:
+        return None
+
+    idx = int(getattr(scene, "umodel_import_bounds_index", -1))
+    if idx < 0 or idx >= len(bounds):
+        return None
+    return bounds[idx]
+
+
+def apply_active_import_bound_to_scene(scene) -> bool:
+    bound = get_active_import_bound(scene)
+    if bound is None:
+        return False
+
+    scene.umodel_min_x = float(bound.min_x)
+    scene.umodel_max_x = float(bound.max_x)
+    scene.umodel_min_y = float(bound.min_y)
+    scene.umodel_max_y = float(bound.max_y)
+    return True
 
 from mathutils import Vector
 

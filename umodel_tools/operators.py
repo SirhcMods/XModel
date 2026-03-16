@@ -1098,6 +1098,13 @@ class UMODEL_OT_bake_tints_to_attr(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+def _get_active_bound_parent_name(scene) -> str:
+    bound = utils.get_active_import_bound(scene)
+    if bound is None:
+        return ""
+    return str(getattr(bound, "name", "") or "").strip()
+
+
 class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):
     bl_idname = "umodel.import_scanned_umap_selected"
     bl_label = "Import Selected Scanned UMAP"
@@ -1107,7 +1114,12 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
     def execute(self, context):
         scene = context.scene
 
-        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+        if not utils.apply_active_import_bound_to_scene(scene):
+            self.report({'ERROR'}, "Create and select an import bound first")
+            return {'CANCELLED'}
+
+        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+        self._bounds_parent_collection_name = _get_active_bound_parent_name(scene)
 
         # Apply general scene import options
         try:
@@ -1156,27 +1168,27 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
 
         db = asset_db.AssetDB(asset_dir)
 
-        # Import exactly one map. If BPP-only mode is enabled, only build placed BPPs.
+        # Import exactly one map, and optionally include placed BPPs too.
         try:
             scene.umodel_use_vertex_bounds = True
-            if only_bpps:
-                ok = self._import_bpps_from_map(
-                    context=context,
-                    map_path=map_path,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    db=db,
-                    map_index=1,
-                    map_total=1
-                )
-            else:
-                # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
-                # This is only used by the 'Import UMAPs with bounds' workflow.
-                self._bounds_dedupe_enabled = True
-                self._bounds_seen_keys = set()
+            # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
+            # This is only used by the 'Import UMAPs with bounds' workflow.
+            self._bounds_dedupe_enabled = True
+            self._bounds_seen_keys = set()
 
-                ok = self._import_map(
+            ok = self._import_map(
+                context=context,
+                map_path=map_path,
+                umodel_export_dir=umodel_export_dir,
+                asset_dir=asset_dir,
+                game_profile=profile.game,
+                db=db,
+                map_index=1,
+                map_total=1
+            )
+
+            if include_bpps:
+                bpp_ok = self._import_bpps_from_map(
                     context=context,
                     map_path=map_path,
                     umodel_export_dir=umodel_export_dir,
@@ -1186,6 +1198,7 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
                     map_index=1,
                     map_total=1
                 )
+                ok = bool(ok or bpp_ok)
         finally:
             # Clear bounds de-dupe state for this operator session
             try:
@@ -1193,6 +1206,7 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
                 self._bounds_seen_keys = set()
             except Exception:
                 pass
+            self._bounds_parent_collection_name = ""
             scene.umodel_use_vertex_bounds = False
 
         db.save_db()
@@ -1213,6 +1227,10 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
     def execute(self, context):
         scene = context.scene
 
+        if not utils.apply_active_import_bound_to_scene(scene):
+            self.report({'ERROR'}, "Create and select an import bound first")
+            return {'CANCELLED'}
+
         # Apply general scene import options
         try:
             self.apply_override_materials = bool(getattr(scene, 'umodel_apply_override_materials', False))
@@ -1223,7 +1241,8 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
         except Exception:
             pass
 
-        only_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
+        self._bounds_parent_collection_name = _get_active_bound_parent_name(scene)
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")
@@ -1276,8 +1295,19 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                     continue
 
 
-                if only_bpps:
-                    ok = self._import_bpps_from_map(
+                ok = self._import_map(
+                    context=context,
+                    map_path=map_path,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    db=db,
+                    map_index=i,
+                    map_total=total
+                )
+
+                if include_bpps:
+                    bpp_ok = self._import_bpps_from_map(
                         context=context,
                         map_path=map_path,
                         umodel_export_dir=umodel_export_dir,
@@ -1287,17 +1317,7 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                         map_index=i,
                         map_total=total
                     )
-                else:
-                    ok = self._import_map(
-                        context=context,
-                        map_path=map_path,
-                        umodel_export_dir=umodel_export_dir,
-                        asset_dir=asset_dir,
-                        game_profile=profile.game,
-                        db=db,
-                        map_index=i,
-                        map_total=total
-                    )
+                    ok = bool(ok or bpp_ok)
 			
                 if ok:
                     imported += 1
@@ -1310,6 +1330,7 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                 self._bounds_seen_keys = set()
             except Exception:
                 pass
+            self._bounds_parent_collection_name = ""
             scene.umodel_use_vertex_bounds = False
 
         db.save_db()

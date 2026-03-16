@@ -78,6 +78,24 @@ class UMODEL_PT_import_umap(bpy.types.Panel):
         layout.operator("umodel_tools.import_unreal_map", text="Import Unreal Map", icon='IMPORT')
 
 
+class UMODELTOOLS_PG_import_bound(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(name="Bound", default="bound0")
+    min_x: bpy.props.FloatProperty(name="Min X")
+    max_x: bpy.props.FloatProperty(name="Max X")
+    min_y: bpy.props.FloatProperty(name="Min Y")
+    max_y: bpy.props.FloatProperty(name="Max Y")
+    min_z: bpy.props.FloatProperty(name="Min Z")
+    max_z: bpy.props.FloatProperty(name="Max Z")
+
+
+class UMODELTOOLS_UL_import_bounds(bpy.types.UIList):
+    bl_idname = "UMODELTOOLS_UL_import_bounds"
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=True, icon='MESH_CUBE')
+
+
 class UMODEL_PT_import_bounds(bpy.types.Panel):
     bl_label = "Import UMAP with Bounds"
     bl_idname = "UMODEL_PT_import_bounds"
@@ -95,23 +113,46 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
-        layout.operator(
+        box = layout.box()
+        box.label(text="Import Bounds")
+
+        row = box.row(align=True)
+        row.operator(
             "umodel.calculate_import_bounds",
+            text="Generate from Selection",
             icon='MESH_CUBE'
         )
+        row.operator("umodel.remove_import_bound", text="", icon='REMOVE')
 
-        col = layout.column(align=True)
+        box.template_list(
+            "UMODELTOOLS_UL_import_bounds",
+            "",
+            scene,
+            "umodel_import_bounds",
+            scene,
+            "umodel_import_bounds_index",
+            rows=4
+        )
 
-        col.prop(scene, "umodel_min_x")
-        col.prop(scene, "umodel_max_x")
-        col.prop(scene, "umodel_min_y")
-        col.prop(scene, "umodel_max_y")
+        active_bound = None
+        if 0 <= int(getattr(scene, "umodel_import_bounds_index", -1)) < len(scene.umodel_import_bounds):
+            active_bound = scene.umodel_import_bounds[scene.umodel_import_bounds_index]
 
-        # Optional mode: only import placed BPP LevelInstances
+        if active_bound is not None:
+            col = box.column(align=True)
+            col.prop(active_bound, "name", text="Name")
+            col.prop(active_bound, "min_x")
+            col.prop(active_bound, "max_x")
+            col.prop(active_bound, "min_y")
+            col.prop(active_bound, "max_y")
+            col.prop(active_bound, "min_z")
+            col.prop(active_bound, "max_z")
+
+        # Optional mode: also include placed BPP LevelInstances
         if hasattr(scene, "umodel_import_bounds_only_bpps"):
-            col.separator()
-            col.prop(scene, "umodel_import_bounds_only_bpps")
-		
+            box.separator()
+            box.prop(scene, "umodel_import_bounds_only_bpps")
+
         box = layout.box()
         box.label(text="Path to UMAPS")
 

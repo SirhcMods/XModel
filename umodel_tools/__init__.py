@@ -73,9 +73,9 @@ def register():
 
     try:
         auto_load.register()
-        from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result
+        from .panels import UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result, UMODELTOOLS_PG_import_bound
         from .preferences import load_profiles_from_disk
-        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result)
+        register_bounds_props(UMODELTOOLS_PG_umap_scan_result, UMODELTOOLS_PG_bpp_scan_result, UMODELTOOLS_PG_prop_scan_result, UMODELTOOLS_PG_import_bound)
         load_profiles_from_disk()
     except Exception:  # pylint: disable=broad-exception-caught
         traceback.print_exc()
@@ -108,7 +108,7 @@ def _prop_category_items(self, context):
     return items
 
 
-def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_pg_type):
+def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_pg_type, import_bound_pg_type):
     bpy.types.Scene.umodel_use_vertex_bounds = bpy.props.BoolProperty(
         name="Import Within Map Bounds",
         description="Only import actors within the calculated vertex bounds",
@@ -119,9 +119,14 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
     bpy.types.Scene.umodel_min_y = bpy.props.FloatProperty(name="Min Y")
     bpy.types.Scene.umodel_max_y = bpy.props.FloatProperty(name="Max Y")
 
+    bpy.types.Scene.umodel_import_bounds = bpy.props.CollectionProperty(
+        type=import_bound_pg_type
+    )
+    bpy.types.Scene.umodel_import_bounds_index = bpy.props.IntProperty(default=-1)
+
     bpy.types.Scene.umodel_import_bounds_only_bpps = bpy.props.BoolProperty(
-        name="Import only BPPs",
-        description="When enabled, bounds scan/import will only consider placed BPP LevelInstances (BPP_*)",
+        name="Include BPPs",
+        description="When enabled, bounds scan/import will also include placed BPP LevelInstances (BPP_*) alongside normal UMAP actors",
         default=False
     )
 	
@@ -235,6 +240,8 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_min_y
     del bpy.types.Scene.umodel_max_y
 
+    del bpy.types.Scene.umodel_import_bounds
+    del bpy.types.Scene.umodel_import_bounds_index
     del bpy.types.Scene.umodel_import_bounds_only_bpps
 
     del bpy.types.Scene.umodel_umap_scan_dir
