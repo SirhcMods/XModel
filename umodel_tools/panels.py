@@ -90,6 +90,15 @@ class UMODEL_PT_import_umap(bpy.types.Panel):
 
 class UMODELTOOLS_PG_import_bound(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(name="Bound", default="bound0")
+    mode: bpy.props.EnumProperty(
+        name="Mode",
+        items=[
+            ('BOX', 'Bounding Box', ''),
+            ('FOOTPRINT', 'Footprint', ''),
+        ],
+        default='BOX'
+    )
+    footprint_points_json: bpy.props.StringProperty(name="Footprint Points", default="")
     min_x: bpy.props.FloatProperty(name="Min X")
     max_x: bpy.props.FloatProperty(name="Max X")
     min_y: bpy.props.FloatProperty(name="Min Y")
@@ -127,6 +136,9 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         box.label(text="Import Bounds")
 
         row = box.row(align=True)
+        row.prop(scene, "umodel_import_bounds_mode", text="Mode")
+
+        row = box.row(align=True)
         row.operator(
             "umodel.calculate_import_bounds",
             text="Generate from Selection",
@@ -151,6 +163,14 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         if active_bound is not None:
             col = box.column(align=True)
             col.prop(active_bound, "name", text="Name")
+            col.prop(active_bound, "mode", text="Bound Type")
+            if getattr(active_bound, "mode", "BOX") == 'FOOTPRINT':
+                try:
+                    import json
+                    point_count = len(json.loads(getattr(active_bound, "footprint_points_json", "") or "[]"))
+                except Exception:
+                    point_count = 0
+                col.label(text=f"Footprint points: {point_count}")
             col.prop(active_bound, "min_x")
             col.prop(active_bound, "max_x")
             col.prop(active_bound, "min_y")

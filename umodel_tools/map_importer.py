@@ -455,10 +455,31 @@ def is_within_import_bounds(pos):
     if not scene.umodel_use_vertex_bounds:
         return True
 
-    return (
+    in_box = (
         scene.umodel_min_x <= pos.x <= scene.umodel_max_x and
         scene.umodel_min_y <= pos.y <= scene.umodel_max_y
     )
+
+    if not in_box:
+        return False
+
+    if str(getattr(scene, "umodel_active_bound_mode", "BOX") or "BOX") != 'FOOTPRINT':
+        return True
+
+    try:
+        from . import utils
+        polygon = utils.get_bound_polygon_points(utils.get_active_import_bound(scene))
+        if not polygon:
+            raw = getattr(scene, "umodel_active_bound_footprint_points_json", "") or ""
+            if raw:
+                import json
+                polygon = [(float(p[0]), float(p[1])) for p in json.loads(raw)]
+        if not polygon:
+            return in_box
+        return utils.point_in_polygon_2d(float(pos.x), float(pos.y), polygon)
+    except Exception:
+        return in_box
+
 
 _RE_OBJNAME_SM = re.compile(r"StaticMesh'([^']+)'", re.IGNORECASE)
 

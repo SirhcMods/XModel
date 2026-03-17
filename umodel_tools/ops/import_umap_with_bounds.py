@@ -9,23 +9,35 @@ class UMODEL_OT_calculate_import_bounds(bpy.types.Operator):
     bl_description = "Create a named import bound from the selected verts / edges / faces"
 
     def execute(self, context):
-        bounds = utils.get_selected_vertex_world_bounds()
-
-        if not bounds:
-            self.report({'ERROR'}, "Select mesh verts, edges, or faces first")
-            return {'CANCELLED'}
-
         scene = context.scene
+        mode = str(getattr(scene, "umodel_import_bounds_mode", "BOX") or "BOX")
+
+        if mode == 'FOOTPRINT':
+            bounds = utils.compute_footprint_from_selection()
+            if not bounds:
+                self.report({'ERROR'}, "Select at least 3 verts / edges / faces to generate a footprint")
+                return {'CANCELLED'}
+        else:
+            bounds = utils.get_selected_vertex_world_bounds()
+            if not bounds:
+                self.report({'ERROR'}, "Select mesh verts, edges, or faces first")
+                return {'CANCELLED'}
+
         bound_items = scene.umodel_import_bounds
 
         item = bound_items.add()
         item.name = f"bound{len(bound_items) - 1}"
+        item.mode = mode
         item.min_x = bounds["min_x"]
         item.max_x = bounds["max_x"]
         item.min_y = bounds["min_y"]
         item.max_y = bounds["max_y"]
         item.min_z = bounds["min_z"]
         item.max_z = bounds["max_z"]
+        if mode == 'FOOTPRINT':
+            item.footprint_points_json = json.dumps(bounds.get("points", []))
+        else:
+            item.footprint_points_json = ""
         scene.umodel_import_bounds_index = len(bound_items) - 1
 
         utils.apply_active_import_bound_to_scene(scene)
@@ -133,7 +145,7 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                 # Console logging (cheap, safe)
                 print(f"[UMAP SCAN] {idx}/{total} ({percent:.1f}%) - {os.path.basename(json_path)}")
 
-                # Occasional status bar update (don’t spam)
+                # Occasional status bar update (dont spam)
                 if idx == 1 or idx % 10 == 0 or idx == total:
                     self.report({'INFO'}, f"Scanning UMAPs: {idx}/{total} ({percent:.1f}%) B:{scene.umodel_use_vertex_bounds}")
 

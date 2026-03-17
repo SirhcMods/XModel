@@ -123,6 +123,17 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         type=import_bound_pg_type
     )
     bpy.types.Scene.umodel_import_bounds_index = bpy.props.IntProperty(default=-1)
+    bpy.types.Scene.umodel_import_bounds_mode = bpy.props.EnumProperty(
+        name="Bounds Mode",
+        description="How Generate from Selection creates the active bound",
+        items=[
+            ('BOX', 'Bounding Box', "Use the selected region's axis-aligned box"),
+            ('FOOTPRINT', 'Footprint', 'Use a 2D footprint polygon from the selected region'),
+        ],
+        default='BOX'
+    )
+    bpy.types.Scene.umodel_active_bound_mode = bpy.props.StringProperty(default='BOX')
+    bpy.types.Scene.umodel_active_bound_footprint_points_json = bpy.props.StringProperty(default='')
 
     bpy.types.Scene.umodel_bounds_phased_import = bpy.props.BoolProperty(
         name="Phased Import",
