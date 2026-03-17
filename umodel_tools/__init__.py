@@ -238,8 +238,8 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
     )
 
     bpy.types.Scene.umodel_asset_ignore_folders = bpy.props.StringProperty(
-        name="Ignore Folders",
-        description="Optional folder names or keywords to ignore during import. Only used when Import Filter Path and Filter Keywords are both empty. Use commas to match any of multiple folders",
+        name="Extra Filters",
+        description="Optional folder names or keywords to narrow mesh importing further. When set, only meshes whose asset paths include one of these folders will be imported. Use commas to match any of multiple folders",
         default=""
     )
 

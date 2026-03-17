@@ -69,10 +69,7 @@ class UMODEL_PT_general(bpy.types.Panel):
         if hasattr(context.scene, "umodel_asset_keyword_filter"):
             layout.prop(context.scene, "umodel_asset_keyword_filter")
         if hasattr(context.scene, "umodel_asset_ignore_folders"):
-            row = layout.row()
-            enabled = not bool((getattr(context.scene, "umodel_asset_path_filter", "") or "").strip()) and not bool((getattr(context.scene, "umodel_asset_keyword_filter", "") or "").strip())
-            row.enabled = enabled
-            row.prop(context.scene, "umodel_asset_ignore_folders")
+            layout.prop(context.scene, "umodel_asset_ignore_folders")
 
 
 class UMODEL_PT_import_umap(bpy.types.Panel):
