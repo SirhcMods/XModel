@@ -1353,16 +1353,20 @@ class MapImporter(asset_importer.AssetImporter):
                     if entity.get("Name") != "Root":
                         continue
 
-                    outer = (entity.get("Outer") or "")
-                    if not outer.startswith("BPP_"):
-                        continue
-
                     template = entity.get("Template") or {}
                     obj_path = template.get("ObjectPath") or ""
                     if not obj_path:
                         continue
 
                     obj_path = strip_objectpath_trailing_dotnum(str(obj_path))
+                    bpp_base_name = os.path.basename(obj_path)
+
+                    # Accept both styles:
+                    # 1) classic form where Outer starts with BPP_
+                    # 2) embedded actor form where Root template points to BPP_*.json
+                    outer = str(entity.get("Outer") or "")
+                    if not (outer.startswith("BPP_") or bpp_base_name.startswith("BPP_")):
+                        continue
 
                     props = entity.get("Properties") or {}
                     loc = props.get("RelativeLocation") or {}
@@ -1395,7 +1399,6 @@ class MapImporter(asset_importer.AssetImporter):
                         utils.verbose_print(f"[BPP] Missing BPP json: {bpp_json_path}")
                         continue
 
-                    bpp_base_name = os.path.basename(obj_path)
                     root_name = self._unique_object_name(bpp_base_name)
                     root = bpy.data.objects.new(root_name, None)
                     root.empty_display_type = 'PLAIN_AXES'
