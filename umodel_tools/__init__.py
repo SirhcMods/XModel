@@ -129,6 +129,20 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         description="When enabled, bounds scan/import will also include placed BPP LevelInstances (BPP_*) alongside normal UMAP actors",
         default=False
     )
+
+    bpy.types.Scene.umodel_bounds_phased_import = bpy.props.BoolProperty(
+        name="Phased Import",
+        description="Import scanned UMAPs in phases, hiding each completed phase collection before continuing",
+        default=False
+    )
+
+    bpy.types.Scene.umodel_bounds_phase_size = bpy.props.IntProperty(
+        name="UMAPs Per Phase",
+        description="How many scanned UMAPs to import per phase when Phased Import is enabled",
+        default=100,
+        min=1,
+        soft_min=1
+    )
 	
     bpy.types.Scene.umodel_umap_scan_dir = bpy.props.StringProperty(
         name="UMAP JSON Directory",

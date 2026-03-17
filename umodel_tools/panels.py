@@ -183,6 +183,13 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
 
         row = box.row(align=True)
         row.operator("umodel.clear_umap_scan_results", text="Clear", icon='X')
+
+        if hasattr(scene, "umodel_bounds_phased_import"):
+            box.prop(scene, "umodel_bounds_phased_import")
+            row = box.row(align=True)
+            row.enabled = bool(getattr(scene, "umodel_bounds_phased_import", False))
+            row.prop(scene, "umodel_bounds_phase_size")
+
         row = box.row(align=True)
         row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
         row.operator("umodel.import_scanned_umap_all", text="Import All")

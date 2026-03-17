@@ -6,6 +6,8 @@ import numpy as np
 import tqdm
 import tqdm.contrib
 import bpy
+import gc
+import math
 import bpy_extras.io_utils
 import importlib.util
 import json
@@ -1118,6 +1120,25 @@ def _get_active_bound_parent_name(scene) -> str:
     return str(getattr(bound, "name", "") or "").strip()
 
 
+def _bounds_phase_parent_name(scene, phase_index: int) -> str:
+    base = _get_active_bound_parent_name(scene) or "bound"
+    return f"{base}_{phase_index}"
+
+
+def _hide_collection_if_exists(name: str) -> None:
+    col = bpy.data.collections.get(name)
+    if col is None:
+        return
+    try:
+        col.hide_viewport = True
+    except Exception:
+        pass
+    try:
+        col.hide_render = True
+    except Exception:
+        pass
+
+
 class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types.Operator):
     bl_idname = "umodel.import_scanned_umap_selected"
     bl_label = "Import Selected Scanned UMAP"
@@ -1263,7 +1284,6 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
             self.load_pbr_maps = False if not getattr(self, 'import_materials', True) else True
 
         include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
-        self._bounds_parent_collection_name = _get_active_bound_parent_name(scene)
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")
@@ -1289,46 +1309,62 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
 
         self._unrecognized_texture_types.clear()
 
-        total = len(scene.umodel_umap_scan_results)
+        items = list(scene.umodel_umap_scan_results)
+        total = len(items)
         db = asset_db.AssetDB(asset_dir)
+        phase_enabled = bool(getattr(scene, "umodel_bounds_phased_import", False))
+        phase_size = max(1, int(getattr(scene, "umodel_bounds_phase_size", 100) or 100))
 
         context.window_manager.progress_begin(0, total)
 
+        prefs_edit = context.preferences.edit
+        old_global_undo = bool(getattr(prefs_edit, "use_global_undo", True))
+        old_lock_interface = bool(getattr(scene.render, "use_lock_interface", False))
+
         try:
+            try:
+                prefs_edit.use_global_undo = False
+            except Exception:
+                pass
+            try:
+                scene.render.use_lock_interface = True
+            except Exception:
+                pass
+
             scene.umodel_use_vertex_bounds = True
             # Bounds import session-wide instance de-dupe (MindsEye has cross-UMAP duplicates)
-            # This is only used by the 'Import UMAPs with bounds' workflow.
             self._bounds_dedupe_enabled = True
             self._bounds_seen_keys = set()
 
             imported = 0
-            for i, item in enumerate(scene.umodel_umap_scan_results, start=1):
-                map_path = item.map_path
-                percent = (i / total) * 100.0
+            total_phases = max(1, math.ceil(total / phase_size)) if phase_enabled else 1
 
-                print(f"[UMAP IMPORT] {i}/{total} ({percent:.1f}%) - {os.path.basename(map_path)}")
-                if i == 1 or i % 5 == 0 or i == total:
-                    self.report({'INFO'}, f"Importing scanned UMAPs: {i}/{total} ({percent:.1f}%) B:{scene.umodel_use_vertex_bounds}")
+            for phase_idx, start_idx in enumerate(range(0, total, phase_size if phase_enabled else total), start=1):
+                phase_items = items[start_idx:start_idx + (phase_size if phase_enabled else total)]
+                phase_parent_name = _bounds_phase_parent_name(scene, phase_idx) if phase_enabled else _get_active_bound_parent_name(scene)
+                self._bounds_parent_collection_name = phase_parent_name
 
-                context.window_manager.progress_update(i)
+                if phase_enabled:
+                    phase_start = start_idx + 1
+                    phase_end = start_idx + len(phase_items)
+                    print(f"[PHASE {phase_idx}/{total_phases}] Importing UMAPs {phase_start}-{phase_end} of {total} into {phase_parent_name}")
+                    self.report({'INFO'}, f"Phase {phase_idx}/{total_phases}: importing {phase_start}-{phase_end} into {phase_parent_name}")
 
-                if not os.path.isfile(map_path):
-                    continue
+                for local_i, item in enumerate(phase_items, start=1):
+                    i = start_idx + local_i
+                    map_path = item.map_path
+                    percent = (i / total) * 100.0
 
+                    print(f"[UMAP IMPORT] {i}/{total} ({percent:.1f}%) - {os.path.basename(map_path)}")
+                    if i == 1 or i % 5 == 0 or i == total:
+                        self.report({'INFO'}, f"Importing scanned UMAPs: {i}/{total} ({percent:.1f}%) B:{scene.umodel_use_vertex_bounds}")
 
-                ok = self._import_map(
-                    context=context,
-                    map_path=map_path,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    db=db,
-                    map_index=i,
-                    map_total=total
-                )
+                    context.window_manager.progress_update(i)
 
-                if include_bpps:
-                    bpp_ok = self._import_bpps_from_map(
+                    if not os.path.isfile(map_path):
+                        continue
+
+                    ok = self._import_map(
                         context=context,
                         map_path=map_path,
                         umodel_export_dir=umodel_export_dir,
@@ -1338,13 +1374,38 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                         map_index=i,
                         map_total=total
                     )
-                    ok = bool(ok or bpp_ok)
-			
-                if ok:
-                    imported += 1
 
-            context.window_manager.progress_end()
+                    if include_bpps:
+                        bpp_ok = self._import_bpps_from_map(
+                            context=context,
+                            map_path=map_path,
+                            umodel_export_dir=umodel_export_dir,
+                            asset_dir=asset_dir,
+                            game_profile=profile.game,
+                            db=db,
+                            map_index=i,
+                            map_total=total
+                        )
+                        ok = bool(ok or bpp_ok)
+
+                    if ok:
+                        imported += 1
+
+                if phase_enabled:
+                    _hide_collection_if_exists(phase_parent_name)
+                    try:
+                        gc.collect()
+                    except Exception:
+                        pass
+                    try:
+                        context.view_layer.update()
+                    except Exception:
+                        pass
+                    print(f"[PHASE {phase_idx}/{total_phases}] Complete. Hid collection '{phase_parent_name}' and refreshed scene state.")
+                    self.report({'INFO'}, f"Phase {phase_idx}/{total_phases} complete: hid {phase_parent_name}")
+
         finally:
+            context.window_manager.progress_end()
             # Clear bounds de-dupe state for this operator session
             try:
                 self._bounds_dedupe_enabled = False
@@ -1353,6 +1414,14 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                 pass
             self._bounds_parent_collection_name = ""
             scene.umodel_use_vertex_bounds = False
+            try:
+                prefs_edit.use_global_undo = old_global_undo
+            except Exception:
+                pass
+            try:
+                scene.render.use_lock_interface = old_lock_interface
+            except Exception:
+                pass
 
         db.save_db()
 

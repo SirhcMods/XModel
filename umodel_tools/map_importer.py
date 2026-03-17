@@ -1329,9 +1329,11 @@ class MapImporter(asset_importer.AssetImporter):
         if not isinstance(json_object, list):
             return False
 
-        # Put all BPP roots under a single collection for organization.
-        # In bounds workflow this collection lives under the active bound parent.
-        bpp_collection = self._get_or_create_collection("BPPs")
+        # Put all BPP roots under a collection for organization.
+        # In bounds workflow this collection lives under the active bound/phase parent.
+        _parent_name = str(getattr(self, "_bounds_parent_collection_name", "") or "").strip()
+        _bpp_collection_name = f"{_parent_name}_BPPs" if _parent_name else "BPPs"
+        bpp_collection = self._get_or_create_collection(_bpp_collection_name)
 
         imported_any = False
         seen_keys: set[str] = set()
