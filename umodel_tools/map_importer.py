@@ -554,7 +554,8 @@ class StaticMesh:
         'StaticMeshComponent',
         'InstancedStaticMeshComponent',
         'HierarchicalInstancedStaticMeshComponent',
-        'FoliageInstancedStaticMeshComponent'
+        'FoliageInstancedStaticMeshComponent',
+        'HLODInstancedStaticMeshComponent'
     ]
 
     entity_name: str = ""
@@ -654,7 +655,7 @@ class StaticMesh:
 
                 self.transform = trs
 
-            case 'InstancedStaticMeshComponent' | 'HierarchicalInstancedStaticMeshComponent' | 'FoliageInstancedStaticMeshComponent':
+            case 'InstancedStaticMeshComponent' | 'HierarchicalInstancedStaticMeshComponent' | 'FoliageInstancedStaticMeshComponent' | 'HLODInstancedStaticMeshComponent':
                 self.is_instanced = True
 
                 instances = json_entity.get("PerInstanceSMData", None)

@@ -72,7 +72,6 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
             self.report({'ERROR'}, "Create and select an import bound first")
             return {'CANCELLED'}
 
-        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
 
         # Apply general scene import options
         try:
@@ -171,9 +170,8 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                     except Exception:
                         # Never let a single bad entity kill the scan
                         continue
-
-                # Optionally also scan placed BPP LevelInstances.
-                if not matched and include_bpps:
+                if not matched:
+                    # Also include maps that contain placed BPP roots inside the active bound.
                     for entity in json_obj:
                         try:
                             if entity.get("Type") != "LevelInstanceComponent":
@@ -181,20 +179,60 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                             if entity.get("Name") != "Root":
                                 continue
 
-                            outer = entity.get("Outer", "") or ""
-                            if not outer.startswith("BPP_"):
+                            template = entity.get("Template") or {}
+                            obj_path = template.get("ObjectPath") or ""
+                            if not obj_path:
+                                continue
+
+                            obj_path = str(obj_path)
+                            bpp_base_name = os.path.basename(obj_path.split(".")[0])
+                            outer = str(entity.get("Outer") or "")
+                            if not (outer.startswith("BPP_") or bpp_base_name.startswith("BPP_")):
                                 continue
 
                             props = entity.get("Properties") or {}
                             loc = props.get("RelativeLocation") or {}
-                            # Convert UE cm -> Blender meters and flip Y to match existing importer.
-                            pos = Vector((
+                            pos_vec = Vector((
                                 float(loc.get("X", 0.0)) / 100.0,
                                 float(loc.get("Y", 0.0)) / -100.0,
                                 float(loc.get("Z", 0.0)) / 100.0,
                             ))
 
-                            if is_within_import_bounds(pos):
+                            if is_within_import_bounds(pos_vec):
+                                matched = True
+                                break
+                        except Exception:
+                            continue
+
+                if not matched:
+                    # Also include maps that contain placed BPP roots inside the active bound.
+                    for entity in json_obj:
+                        try:
+                            if entity.get("Type") != "LevelInstanceComponent":
+                                continue
+                            if entity.get("Name") != "Root":
+                                continue
+
+                            template = entity.get("Template") or {}
+                            obj_path = template.get("ObjectPath") or ""
+                            if not obj_path:
+                                continue
+
+                            obj_path = str(obj_path)
+                            bpp_base_name = os.path.basename(obj_path.split(".")[0])
+                            outer = str(entity.get("Outer") or "")
+                            if not (outer.startswith("BPP_") or bpp_base_name.startswith("BPP_")):
+                                continue
+
+                            props = entity.get("Properties") or {}
+                            loc = props.get("RelativeLocation") or {}
+                            pos_vec = Vector((
+                                float(loc.get("X", 0.0)) / 100.0,
+                                float(loc.get("Y", 0.0)) / -100.0,
+                                float(loc.get("Z", 0.0)) / 100.0,
+                            ))
+
+                            if is_within_import_bounds(pos_vec):
                                 matched = True
                                 break
                         except Exception:
@@ -216,10 +254,7 @@ class UMODEL_OT_scan_umap_bounds(bpy.types.Operator):
                 pass
             scene.umodel_use_vertex_bounds = False
 
-        if include_bpps:
-            self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds (including BPPs)")
-        else:
-            self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
+        self.report({'INFO'}, f"UMAP scan complete: {matches} / {total} maps within bounds")
         return {'FINISHED'}
 
 

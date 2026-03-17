@@ -211,10 +211,12 @@ class UMODEL_OT_scan_bpp_dir(bpy.types.Operator):
             self.report({'ERROR'}, f"Directory not found: {scan_dir}")
             return {'CANCELLED'}
 
-        existing_paths = {item.bpp_path for item in scene.umodel_bpp_scan_results}
+        scene.umodel_bpp_scan_results.clear()
+        scene.umodel_bpp_scan_index = 0
 
         found = 0
         added = 0
+
         for root, _dirs, files in os.walk(scan_dir):
             for filename in files:
                 if not filename.lower().endswith(".json"):
@@ -224,16 +226,15 @@ class UMODEL_OT_scan_bpp_dir(bpy.types.Operator):
 
                 found += 1
                 json_path = os.path.join(root, filename)
-                if json_path in existing_paths:
-                    continue
-
                 item = scene.umodel_bpp_scan_results.add()
                 item.bpp_name = os.path.splitext(os.path.basename(json_path))[0]
                 item.bpp_path = json_path
-                existing_paths.add(json_path)
+                item.placements_json = ""
+                item.placement_count = 0
+                item.built_collection_name = ""
                 added += 1
 
-        self.report({'INFO'}, f"BPP scan complete: found {found} file(s), added {added} new")
+        self.report({'INFO'}, f"BPP scan complete: found {found} file(s), added {added}")
         return {'FINISHED'}
 
 
@@ -277,11 +278,11 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
                     umodel_export_dir: str,
                     asset_dir: str,
                     game_profile: str,
-                    db: asset_db.AssetDB) -> bool:
+                    db: asset_db.AssetDB) -> t.Optional[str]:
 
         if not os.path.isfile(bpp_path):
             self._warn_print(f"Warning: BPP file not found: {bpp_path}")
-            return False
+            return None
 
         with open(bpp_path, mode='r', encoding='utf-8') as f:
             json_object = json.load(f)
@@ -357,7 +358,7 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
             except Exception as e:
                 self._warn_print(f"[umodel_tools] Warning: BPP post-import material repair failed: {e}")
 
-        return imported_any
+        return collection_name if imported_any else None
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         profile = preferences.get_addon_preferences().get_active_profile()
@@ -407,19 +408,105 @@ class UMODEL_OT_build_bpp_selected(map_importer.MapImporter, bpy.types.Operator)
         built = 0
 
         for item in selected_items:
-            if self._import_bpp(
+            built_collection_name = self._import_bpp(
                 context=context,
                 bpp_path=item.bpp_path,
                 umodel_export_dir=umodel_export_dir,
                 asset_dir=asset_dir,
                 game_profile=profile.game,
                 db=db
-            ):
+            )
+            if built_collection_name:
+                item.built_collection_name = built_collection_name
                 built += 1
 
         db.save_db()
 
         return self._op_message('INFO', f"Built {built}/{len(selected_items)} BPP(s).")
+
+
+class UMODEL_OT_place_bpp_selected(bpy.types.Operator):
+    bl_idname = "umodel.place_bpp_selected"
+    bl_label = "Place Selected BPP(s)"
+    bl_description = "Place collection instances for the selected BPPs at the transforms found in the scanned UMAP placements"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        selected_items = [it for it in scene.umodel_bpp_scan_results if getattr(it, "selected", False)]
+        if not selected_items and len(scene.umodel_bpp_scan_results) > 0:
+            idx = int(scene.umodel_bpp_scan_index)
+            if 0 <= idx < len(scene.umodel_bpp_scan_results):
+                selected_items = [scene.umodel_bpp_scan_results[idx]]
+        if not selected_items:
+            self.report({'ERROR'}, "No BPPs selected")
+            return {'CANCELLED'}
+
+        parent_name = "Placed BPPs"
+        active_bound = utils.get_active_import_bound(scene)
+        if bool(getattr(scene, "umodel_bpp_scan_within_bound", False)) and active_bound is not None:
+            parent_name = f"{active_bound.name}_Placed_BPPs"
+
+        parent_collection = bpy.data.collections.get(parent_name)
+        if parent_collection is None:
+            parent_collection = bpy.data.collections.new(parent_name)
+            bpy.context.scene.collection.children.link(parent_collection)
+
+        placed = 0
+        dedupe = set()
+        for item in selected_items:
+            placements_raw = getattr(item, "placements_json", "") or ""
+            if not placements_raw:
+                continue
+            try:
+                placements = json.loads(placements_raw)
+            except Exception:
+                continue
+
+            target_collection = None
+            built_name = str(getattr(item, "built_collection_name", "") or "").strip()
+            if built_name:
+                target_collection = bpy.data.collections.get(built_name)
+            if target_collection is None:
+                for candidate in (item.bpp_name + "_C", item.bpp_name):
+                    target_collection = bpy.data.collections.get(candidate)
+                    if target_collection is not None:
+                        break
+            if target_collection is None:
+                self.report({'WARNING'}, f"Build the BPP first: {item.bpp_name}")
+                continue
+
+            for idx, placement in enumerate(placements, start=1):
+                loc = placement.get("location", [0.0, 0.0, 0.0])
+                rot = placement.get("rotation_euler", [0.0, 0.0, 0.0])
+                scale = placement.get("scale", [1.0, 1.0, 1.0])
+                key = (
+                    target_collection.name,
+                    *(round(float(v), 3) for v in loc),
+                    *(round(float(v), 6) for v in rot),
+                    *(round(float(v), 6) for v in scale),
+                )
+                if key in dedupe:
+                    continue
+                dedupe.add(key)
+
+                obj_name = f"{item.bpp_name}_PLACED_{idx:03d}"
+                inst = bpy.data.objects.new(obj_name, None)
+                inst.instance_type = 'COLLECTION'
+                inst.instance_collection = target_collection
+                inst.location = tuple(float(v) for v in loc)
+                inst.rotation_mode = 'XYZ'
+                inst.rotation_euler = tuple(float(v) for v in rot)
+                inst.scale = tuple(float(v) for v in scale)
+                parent_collection.objects.link(inst)
+                placed += 1
+
+        if placed == 0:
+            self.report({'WARNING'}, "No BPP placements were created")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Placed {placed} BPP instance(s)")
+        return {'FINISHED'}
 
 
 class UMODEL_OT_scan_prop_dir(bpy.types.Operator):
@@ -1152,7 +1239,6 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
             self.report({'ERROR'}, "Create and select an import bound first")
             return {'CANCELLED'}
 
-        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
         self._bounds_parent_collection_name = _get_active_bound_parent_name(scene)
 
         # Apply general scene import options
@@ -1224,19 +1310,6 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
                 map_index=1,
                 map_total=1
             )
-
-            if include_bpps:
-                bpp_ok = self._import_bpps_from_map(
-                    context=context,
-                    map_path=map_path,
-                    umodel_export_dir=umodel_export_dir,
-                    asset_dir=asset_dir,
-                    game_profile=profile.game,
-                    db=db,
-                    map_index=1,
-                    map_total=1
-                )
-                ok = bool(ok or bpp_ok)
         finally:
             # Clear bounds de-dupe state for this operator session
             try:
@@ -1255,6 +1328,104 @@ class UMODEL_OT_import_scanned_umap_selected(map_importer.MapImporter, bpy.types
             self._op_message('WARNING', "Map import had warnings. Check console for details.")
 
         return {'FINISHED'} if ok else {'CANCELLED'}
+
+class UMODEL_OT_build_potential_bpps(map_importer.MapImporter, bpy.types.Operator):
+    bl_idname = "umodel.build_potential_bpps"
+    bl_label = "Build Potential BPPs"
+    bl_description = "Build and place placed BPP roots found in the scanned UMAP results into a dedicated bound BPP collection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+
+        if not utils.apply_active_import_bound_to_scene(scene):
+            self.report({'ERROR'}, "Create and select an import bound first")
+            return {'CANCELLED'}
+
+        if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
+            self.report({'ERROR'}, "No scan results to process.")
+            return {'CANCELLED'}
+
+        profile = preferences.get_addon_preferences().get_active_profile()
+        if profile is None:
+            return self._op_message('ERROR', "You need to have an active game profile selected.")
+
+        umodel_export_dir: str = _resolve_dir_path(profile.umodel_export_dir)
+        if not umodel_export_dir:
+            return self._op_message('ERROR', "You need to specify a UModel export dir in Scene properties.")
+        if not os.path.isdir(umodel_export_dir):
+            return self._op_message('ERROR', f"Path to UModel export dir {umodel_export_dir} does not exist.")
+
+        asset_dir: str = _resolve_dir_path(profile.asset_dir)
+        if not asset_dir:
+            return self._op_message('ERROR', "You need to specify an asset dir in Scene properties.")
+        if not os.path.isdir(asset_dir):
+            return self._op_message('ERROR', f"Path to asset dir {asset_dir} does not exist.")
+
+        # Apply the same general import options used elsewhere.
+        try:
+            self.import_materials = bool(getattr(scene, 'umodel_import_materials', True))
+        except Exception:
+            self.import_materials = True
+        try:
+            self.apply_override_materials = self.import_materials and bool(getattr(scene, 'umodel_apply_override_materials', False))
+        except Exception:
+            self.apply_override_materials = False
+        try:
+            self.load_pbr_maps = self.import_materials and bool(getattr(scene, 'umodel_load_pbr_maps', True))
+        except Exception:
+            self.load_pbr_maps = False if not getattr(self, 'import_materials', True) else True
+
+        items = list(scene.umodel_umap_scan_results)
+        total = len(items)
+        db = asset_db.AssetDB(asset_dir)
+        built_maps = 0
+
+        active_bound = utils.get_active_import_bound(scene)
+        self._bounds_parent_collection_name = getattr(active_bound, 'name', '') if active_bound is not None else ''
+
+        context.window_manager.progress_begin(0, total)
+        try:
+            scene.umodel_use_vertex_bounds = True
+            self._bounds_dedupe_enabled = True
+            self._bounds_seen_keys = set()
+
+            for i, item in enumerate(items, start=1):
+                map_path = item.map_path
+                context.window_manager.progress_update(i)
+                if not os.path.isfile(map_path):
+                    continue
+
+                ok = self._import_bpps_from_map(
+                    context=context,
+                    map_path=map_path,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_dir=asset_dir,
+                    game_profile=profile.game,
+                    db=db,
+                    map_index=i,
+                    map_total=total
+                )
+                if ok:
+                    built_maps += 1
+        finally:
+            context.window_manager.progress_end()
+            try:
+                self._bounds_dedupe_enabled = False
+                self._bounds_seen_keys = set()
+            except Exception:
+                pass
+            self._bounds_parent_collection_name = ""
+            scene.umodel_use_vertex_bounds = False
+
+        db.save_db()
+        self._print_unrecognized_textures()
+
+        if self._has_warnings:
+            self._op_message('WARNING', "Potential BPP build had warnings. Check console for details.")
+
+        return self._op_message('INFO', f"Built potential BPPs from {built_maps}/{total} scanned UMAP(s).")
+
 
 class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Operator):
     bl_idname = "umodel.import_scanned_umap_all"
@@ -1283,7 +1454,6 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
         except Exception:
             self.load_pbr_maps = False if not getattr(self, 'import_materials', True) else True
 
-        include_bpps = bool(getattr(scene, "umodel_import_bounds_only_bpps", False))
 
         if not hasattr(scene, "umodel_umap_scan_results") or len(scene.umodel_umap_scan_results) == 0:
             self.report({'ERROR'}, "No scan results to import.")
@@ -1375,19 +1545,6 @@ class UMODEL_OT_import_scanned_umap_all(map_importer.MapImporter, bpy.types.Oper
                         map_total=total
                     )
 
-                    if include_bpps:
-                        bpp_ok = self._import_bpps_from_map(
-                            context=context,
-                            map_path=map_path,
-                            umodel_export_dir=umodel_export_dir,
-                            asset_dir=asset_dir,
-                            game_profile=profile.game,
-                            db=db,
-                            map_index=i,
-                            map_total=total
-                        )
-                        ok = bool(ok or bpp_ok)
-
                     if ok:
                         imported += 1
 
@@ -1448,3 +1605,113 @@ class UMODEL_OT_build_landscape_materials(bpy.types.Operator):
             import traceback
             traceback.print_exc()
             return {'CANCELLED'}
+
+def _iter_bpp_placements_from_umap_json(json_obj, map_path: str):
+    from mathutils import Vector
+    from .map_importer import is_within_import_bounds
+
+    if not isinstance(json_obj, list):
+        return
+
+    for entity in json_obj:
+        try:
+            if entity.get("Type") != "LevelInstanceComponent":
+                continue
+            if entity.get("Name") != "Root":
+                continue
+
+            template = entity.get("Template") or {}
+            obj_path = template.get("ObjectPath") or ""
+            if not obj_path:
+                continue
+            obj_path = strip_objectpath_trailing_dotnum(str(obj_path))
+            bpp_base_name = os.path.basename(obj_path)
+
+            outer = str(entity.get("Outer") or "")
+            if not (outer.startswith("BPP_") or bpp_base_name.startswith("BPP_")):
+                continue
+
+            props = entity.get("Properties") or {}
+            loc = props.get("RelativeLocation") or {}
+            rot = props.get("RelativeRotation") or {}
+            scale = props.get("RelativeScale3D") or {}
+
+            pos_vec = Vector((
+                float(loc.get("X", 0.0)) / 100.0,
+                float(loc.get("Y", 0.0)) / -100.0,
+                float(loc.get("Z", 0.0)) / 100.0,
+            ))
+
+            if not is_within_import_bounds(pos_vec):
+                continue
+
+            yield {
+                "bpp_name": bpp_base_name,
+                "object_path": obj_path,
+                "map_path": map_path,
+                "location": [float(pos_vec.x), float(pos_vec.y), float(pos_vec.z)],
+                "rotation_euler": [
+                    math.radians(float(rot.get("Roll", 0.0))),
+                    math.radians(-float(rot.get("Pitch", 0.0))),
+                    math.radians(-float(rot.get("Yaw", 0.0))),
+                ],
+                "scale": [
+                    float(scale.get("X", 1.0)),
+                    float(scale.get("Y", 1.0)),
+                    float(scale.get("Z", 1.0)),
+                ],
+            }
+        except Exception:
+            continue
+
+
+def _scan_bpp_placements_within_active_bound(scene, bpp_dir: str) -> dict[str, list[dict]]:
+    if not utils.apply_active_import_bound_to_scene(scene):
+        raise RuntimeError("Create and select an import bound first")
+    if not os.path.isdir(bpp_dir):
+        raise RuntimeError(f"BPP directory not found: {bpp_dir}")
+
+    scan_items = list(getattr(scene, "umodel_umap_scan_results", []))
+    if not scan_items:
+        raise RuntimeError("No scanned UMAP results found. Run the Bounds panel Scan first.")
+
+    bpp_name_to_path = {}
+    for root, _dirs, files in os.walk(bpp_dir):
+        for filename in files:
+            if not filename.lower().endswith('.json'):
+                continue
+            if not filename.startswith('BPP_'):
+                continue
+            bpp_name_to_path.setdefault(os.path.splitext(filename)[0], os.path.join(root, filename))
+
+    placements_by_path: dict[str, list[dict]] = {}
+    dedupe = set()
+
+    for scan_item in scan_items:
+        map_path = getattr(scan_item, "map_path", "") or ""
+        if not map_path or not os.path.isfile(map_path):
+            continue
+
+        try:
+            with open(map_path, 'r', encoding='utf-8') as f:
+                json_obj = json.load(f)
+        except Exception:
+            continue
+
+        for placement in _iter_bpp_placements_from_umap_json(json_obj, map_path):
+            bpp_path = bpp_name_to_path.get(placement['bpp_name'])
+            if not bpp_path:
+                continue
+            key = (
+                bpp_path,
+                *(round(v, 3) for v in placement['location']),
+                *(round(v, 6) for v in placement['rotation_euler']),
+                *(round(v, 6) for v in placement['scale']),
+            )
+            if key in dedupe:
+                continue
+            dedupe.add(key)
+            placements_by_path.setdefault(bpp_path, []).append(placement)
+
+    return placements_by_path
+

@@ -158,11 +158,6 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
             col.prop(active_bound, "min_z")
             col.prop(active_bound, "max_z")
 
-        # Optional mode: also include placed BPP LevelInstances
-        if hasattr(scene, "umodel_import_bounds_only_bpps"):
-            box.separator()
-            box.prop(scene, "umodel_import_bounds_only_bpps")
-
         box = layout.box()
         box.label(text="Path to UMAPS")
 
@@ -193,6 +188,9 @@ class UMODEL_PT_import_bounds(bpy.types.Panel):
         row.operator("umodel.import_scanned_umap_selected", text="Import Selected")
         row.operator("umodel.import_scanned_umap_all", text="Import All")
 
+        row = box.row(align=True)
+        row.operator("umodel.build_potential_bpps", text="Build Potential BPPs", icon='OUTLINER_COLLECTION')
+
 class UMODEL_PT_bpp_builder(bpy.types.Panel):
     bl_label = "BPP Builder"
     bl_idname = "UMODEL_PT_bpp_builder"
@@ -216,7 +214,6 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
         row = box.row(align=True)
         row.prop(scene, "umodel_bpp_scan_dir", text="")
         row.operator("umodel.scan_bpp_dir", text="Scan", icon='VIEWZOOM')
-
         box.template_list(
             "UMODELTOOLS_UL_bpp_scan_results",
             "",
@@ -232,6 +229,9 @@ class UMODEL_PT_bpp_builder(bpy.types.Panel):
 
         row = box.row(align=True)
         row.operator("umodel.build_bpp_selected", text="Build", icon='PLAY')
+
+        row = box.row(align=True)
+        row.operator("umodel.place_bpp_selected", text="Place BPP", icon='OUTLINER_OB_GROUP_INSTANCE')
 
 
 
@@ -347,6 +347,12 @@ class UMODELTOOLS_PG_bpp_scan_result(bpy.types.PropertyGroup):
     selected: bpy.props.BoolProperty(name="Selected", default=False)
     bpp_name: bpy.props.StringProperty(name="BPP")
     bpp_path: bpy.props.StringProperty(name="Path")
+    placements_json: bpy.props.StringProperty(name="Placements", default="")
+    placement_count: bpy.props.IntProperty(name="Placement Count", default=0)
+    built_collection_name: bpy.props.StringProperty(name="Built Collection", default="")
+    placements_json: bpy.props.StringProperty(name="Placements", default="")
+    placement_count: bpy.props.IntProperty(name="Placement Count", default=0)
+    built_collection_name: bpy.props.StringProperty(name="Built Collection", default="")
 
 
 class UMODELTOOLS_UL_bpp_scan_results(bpy.types.UIList):
@@ -355,7 +361,10 @@ class UMODELTOOLS_UL_bpp_scan_results(bpy.types.UIList):
     def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
         row = layout.row(align=True)
         row.prop(item, "selected", text="")
-        row.label(text=item.bpp_name)
+        label = item.bpp_name
+        if getattr(item, "placement_count", 0):
+            label = f"{label} ({item.placement_count})"
+        row.label(text=label)
 
 class UMODELTOOLS_PG_umap_scan_result(bpy.types.PropertyGroup):
     map_name: bpy.props.StringProperty(name="Map")
