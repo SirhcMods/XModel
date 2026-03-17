@@ -24,6 +24,7 @@ from . import fmodel_json_parser
 from . import props_txt_parser
 from . import enums
 from . import game_profiles
+from . import material_builder
 
 from .ops.bake_tints_to_attr import bake_tints_to_attr_on_selected
 from .utils import _profile_feature_enabled
@@ -1051,6 +1052,14 @@ class UMODEL_OT_build_selected_materials(asset_importer.AssetImporter, bpy.types
         else:
             search_root = umodel_export_dir
 
+        use_override_from_umap = bool(getattr(context.scene, 'umodel_apply_override_materials', False))
+        material_builder_umap_root = _resolve_dir_path(getattr(context.scene, 'umodel_material_builder_umap_root', ''))
+        if use_override_from_umap:
+            if not material_builder_umap_root:
+                return self._op_message('ERROR', "OverrideMaterials is enabled. Set UMAP Root Dir in the Material Builder panel.")
+            if not os.path.isdir(material_builder_umap_root):
+                return self._op_message('ERROR', f"UMAP Root Dir does not exist: {material_builder_umap_root}")
+
         asset_dir = _resolve_dir_path(profile.asset_dir)
         if not asset_dir:
             return self._op_message('ERROR', "You need to specify an Asset Directory in the active profile.")
@@ -1065,6 +1074,7 @@ class UMODEL_OT_build_selected_materials(asset_importer.AssetImporter, bpy.types
         self._unrecognized_texture_types.clear()
         db = asset_db.AssetDB(asset_dir)
         json_index = _index_static_mesh_jsons(search_root)
+        self._umap_override_cache = {}
 
         built_count = 0
         failed_count = 0
@@ -1164,6 +1174,53 @@ class UMODEL_OT_build_selected_materials(asset_importer.AssetImporter, bpy.types
                     obj["_umodel_material_builder_source"] = lookup_name or Path(json_path).stem
                 except Exception:
                     pass
+
+                # Apply per-instance OverrideMaterials + tint data from the source UMAP after base slots are built.
+                if use_override_from_umap:
+                    umap_json_path = material_builder.resolve_object_umap_json_path(obj, material_builder_umap_root)
+                    if not umap_json_path:
+                        self._warn_print(f"[MaterialBuilder] UMAP JSON not found for override/tint lookup: {obj.name}")
+                    else:
+                        sm_match = material_builder.find_umap_static_mesh_match_for_object(self, obj, umap_json_path)
+                        if sm_match is None:
+                            self._warn_print(f"[MaterialBuilder] No UMAP component match found for {obj.name} in {os.path.basename(umap_json_path)}")
+                        else:
+                            try:
+                                # Mimic import-time order: persist/repair base -> apply overrides -> regenerate tint props.
+                                material_builder.persist_base_material_slots(self, obj)
+                                material_builder.repair_base_material_slots(
+                                    self,
+                                    obj,
+                                    umodel_export_dir=umodel_export_dir,
+                                    asset_dir=asset_dir,
+                                    game_profile=profile.game,
+                                    db=db,
+                                    force_reassign=True
+                                )
+                                overrides = getattr(sm_match, 'override_materials', None)
+                                if overrides and any(x is not None for x in overrides):
+                                    material_builder.apply_override_materials_to_object(
+                                        self,
+                                        obj,
+                                        overrides,
+                                        umodel_export_dir=umodel_export_dir,
+                                        asset_dir=asset_dir,
+                                        game_profile=profile.game,
+                                        db=db
+                                    )
+                                    self._warn_print(f"[MaterialBuilder] Applied UMAP OverrideMaterials for {obj.name} from {os.path.basename(umap_json_path)}")
+                                else:
+                                    self._warn_print(f"[MaterialBuilder] No UMAP OverrideMaterials found for {obj.name} in {os.path.basename(umap_json_path)}")
+
+                                if _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER"):
+                                    regen_ok = material_builder.regen_tint_custom_props_from_static_mesh(self, obj, sm_match)
+                                    if regen_ok:
+                                        try:
+                                            map_importer.color_palette_unwrapper.relink_tinted_materials_by_tint_id([obj])
+                                        except Exception as exc:
+                                            self._warn_print(f"[MaterialBuilder] Tint relink failed for {obj.name}: {exc}")
+                            except Exception as exc:
+                                self._warn_print(f"[MaterialBuilder] Failed applying UMAP override/tint data for {obj.name}: {exc}")
 
                 built_count += 1
 

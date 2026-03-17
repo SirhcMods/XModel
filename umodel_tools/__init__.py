@@ -255,6 +255,14 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
         update=_make_abs_update("umodel_material_builder_root"),
     )
 
+    bpy.types.Scene.umodel_material_builder_umap_root = bpy.props.StringProperty(
+        name="UMAP Root Dir",
+        description="Folder containing exported UMAP JSON files, used by Material Builder to read OverrideMaterials from the source UMAP collections",
+        subtype='DIR_PATH',
+        default="",
+        update=_make_abs_update("umodel_material_builder_umap_root"),
+    )
+
     bpy.types.Scene.umodel_landscape_umap_dir = bpy.props.StringProperty(
         name="Landscape UMAP Folder",
         description="Folder containing exported landscape UMAP JSON files",
@@ -303,6 +311,7 @@ def unregister_bounds_props():
     del bpy.types.Scene.umodel_asset_keyword_filter
     del bpy.types.Scene.umodel_asset_ignore_folders
     del bpy.types.Scene.umodel_material_builder_root
+    del bpy.types.Scene.umodel_material_builder_umap_root
 
     del bpy.types.Scene.umodel_landscape_umap_dir
     del bpy.types.Scene.umodel_landscape_weightmap_dir
