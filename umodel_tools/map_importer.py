@@ -1825,6 +1825,8 @@ class MapImporter(asset_importer.AssetImporter):
         """
         if not self.import_materials:
             return None
+        if self._is_local_asset_mode():
+            return None
 
         # 1) Reload all linked libraries (existing addon behavior)
         for lib in bpy.data.libraries:
@@ -2120,7 +2122,7 @@ class MapImporter(asset_importer.AssetImporter):
                         #light.import_light(import_collection)
 
         # Post-import: batch library reload/material repair so bulk UMAP imports don't freeze Blender.
-        if getattr(self, 'import_materials', True):
+        if getattr(self, 'import_materials', True) and not self._is_local_asset_mode(context):
             _post_import_enqueue(
                 import_collection.name,
                 umodel_export_dir,

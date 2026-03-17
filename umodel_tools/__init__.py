@@ -195,6 +195,16 @@ def register_bounds_props(umap_result_pg_type, bpp_result_pg_type, prop_result_p
     )
 
 
+    bpy.types.Scene.umodel_asset_loading_mode = bpy.props.EnumProperty(
+        name="Asset Loading Mode",
+        description="How imported mesh assets are loaded into Blender. Local Cache appends assets locally and reuses cached mesh data to avoid linked-library instability on large world imports",
+        items=[
+            ('LOCAL_CACHE', 'Local Cache', 'Append assets locally once per session and reuse their mesh data. Recommended for large world imports', 0),
+            ('LINKED_LIBRARY', 'Linked Library', 'Use the original linked asset-library workflow', 1),
+        ],
+        default='LOCAL_CACHE'
+    )
+
     # General import options (apply to single UMAP import, bounds import, and BPP builder)
     bpy.types.Scene.umodel_import_materials = bpy.props.BoolProperty(
         name="Import Materials",
@@ -284,6 +294,7 @@ def unregister_bounds_props():
 
     del bpy.types.Scene.umodel_bpp_apply_override_materials
     del bpy.types.Scene.umodel_apply_override_materials
+    del bpy.types.Scene.umodel_asset_loading_mode
     del bpy.types.Scene.umodel_load_pbr_maps
 
     del bpy.types.Scene.umodel_asset_path_filter

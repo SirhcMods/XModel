@@ -55,6 +55,10 @@ class AssetImporter:
 
     _has_warnings: bool = False
 
+    # Session-local cache for appended source objects/materials when using Local Cache mode.
+    _local_asset_cache: dict[str, str] = {}
+    _local_material_cache: dict[str, str] = {}
+
     def _op_message(self, msg_type: t.Literal['INFO'] | t.Literal['ERROR'] | t.Literal['WARNING'], msg: str):
         """Print operator message and return the associated status-code.
 
@@ -89,6 +93,179 @@ class AssetImporter:
             print(self._unrecognized_texture_types)
             self._unrecognized_texture_types.clear()
 
+    def _get_asset_loading_mode(self, context: bpy.types.Context | None = None) -> str:
+        ctx = context or bpy.context
+        scene = getattr(ctx, "scene", None)
+        try:
+            return str(getattr(scene, "umodel_asset_loading_mode", "LOCAL_CACHE") or "LOCAL_CACHE")
+        except Exception:
+            return "LOCAL_CACHE"
+
+    def _is_local_asset_mode(self, context: bpy.types.Context | None = None) -> bool:
+        return self._get_asset_loading_mode(context) == "LOCAL_CACHE"
+
+    def _localize_material(self, mat: bpy.types.Material | None) -> bpy.types.Material | None:
+        if mat is None:
+            return None
+        try:
+            if getattr(mat, "library", None) is not None:
+                mat = mat.copy()
+        except Exception:
+            pass
+        try:
+            node_tree = getattr(mat, "node_tree", None)
+            if node_tree is not None:
+                for node in node_tree.nodes:
+                    img = getattr(node, "image", None)
+                    if img is not None and getattr(img, "library", None) is not None:
+                        try:
+                            node.image = img.copy()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        return mat
+
+    def _localize_object_datablocks(self, obj: bpy.types.Object | None) -> bpy.types.Object | None:
+        if obj is None:
+            return None
+
+        try:
+            if getattr(obj, "library", None) is not None:
+                obj = obj.copy()
+        except Exception:
+            pass
+
+        try:
+            if getattr(obj, "data", None) is not None and getattr(obj.data, "library", None) is not None:
+                obj.data = obj.data.copy()
+        except Exception:
+            pass
+
+        try:
+            if getattr(obj, "data", None) is not None and hasattr(obj.data, "materials"):
+                for i, mat in enumerate(list(obj.data.materials)):
+                    obj.data.materials[i] = self._localize_material(mat)
+        except Exception:
+            pass
+
+        try:
+            if getattr(obj, "material_slots", None):
+                for slot in obj.material_slots:
+                    slot.material = self._localize_material(slot.material)
+        except Exception:
+            pass
+
+        return obj
+
+    def _load_local_cached_object(self,
+                                  context: bpy.types.Context,
+                                  asset_path_abs: str,
+                                  asset_dir: str,
+                                  asset_path: str,
+                                  umodel_export_dir: str,
+                                  game_profile: str,
+                                  db: t.Optional[asset_db.AssetDB] = None
+                                  ) -> bpy.types.Object | None:
+        try:
+            if not os.path.isfile(asset_path_abs):
+                self._import_asset_to_library(
+                    context=context,
+                    asset_library_dir=asset_dir,
+                    asset_path=asset_path,
+                    umodel_export_dir=umodel_export_dir,
+                    db=db,
+                    game_profile=game_profile
+                )
+
+            cached_name = self._local_asset_cache.get(asset_path_abs)
+            if cached_name:
+                cached = bpy.data.objects.get(cached_name)
+                if cached is not None and getattr(cached, "data", None) is not None:
+                    return cached
+
+            with utils.redirect_cstdout():
+                with bpy.data.libraries.load(asset_path_abs, link=False) as (data_from, data_to):
+                    data_to.objects = list(data_from.objects)
+                    assert len(data_to.objects) == 1
+
+                src_obj = data_to.objects[0]
+
+            src_obj = self._localize_object_datablocks(src_obj)
+            if src_obj is None:
+                return None
+
+            try:
+                src_obj["_umodel_local_cache_source"] = 1
+                src_obj.use_fake_user = True
+            except Exception:
+                pass
+
+            self._local_asset_cache[asset_path_abs] = src_obj.name
+            return src_obj
+
+        except (RuntimeError, FileNotFoundError, AssertionError):
+            traceback.print_exc()
+            return None
+
+    def _get_or_load_local_material(self,
+                                    material_name: str,
+                                    material_lib_path: str,
+                                    material_path_local_no_ext: str,
+                                    umodel_export_dir: str,
+                                    asset_dir: str,
+                                    game_profile: str,
+                                    db: t.Optional[asset_db.AssetDB] = None
+                                    ) -> bpy.types.Material | None:
+        valid = bpy.data.materials.get(material_name)
+        if valid is not None and getattr(valid, "library", None) is None:
+            return valid
+
+        cached_name = self._local_material_cache.get(material_lib_path)
+        if cached_name:
+            cached = bpy.data.materials.get(cached_name)
+            if cached is not None and getattr(cached, "library", None) is None:
+                return cached
+
+        try:
+            if not os.path.isfile(material_lib_path):
+                if db is None:
+                    db = asset_db.AssetDB(db_root_path=asset_dir)
+                self._import_material_to_library(
+                    material_name=material_name,
+                    material_path_local_no_ext=material_path_local_no_ext,
+                    db=db,
+                    umodel_export_dir=umodel_export_dir,
+                    asset_library_dir=asset_dir,
+                    game_profile=game_profile
+                )
+
+            with utils.redirect_cstdout():
+                with bpy.data.libraries.load(filepath=material_lib_path, link=False) as (data_from, data_to):
+                    chosen_name = None
+                    for n in data_from.materials:
+                        if n == material_name:
+                            chosen_name = n
+                            break
+                    if chosen_name is None and data_from.materials:
+                        chosen_name = data_from.materials[0]
+                    data_to.materials = [chosen_name] if chosen_name else []
+
+                new_mat = data_to.materials[0] if data_to.materials else None
+
+            new_mat = self._localize_material(new_mat)
+            if new_mat is not None:
+                try:
+                    new_mat.use_fake_user = True
+                except Exception:
+                    pass
+                self._local_material_cache[material_lib_path] = new_mat.name
+            return new_mat
+
+        except Exception:
+            traceback.print_exc()
+            return None
+
     def _load_asset(self,
                     context: bpy.types.Context,
                     asset_dir: str,
@@ -115,6 +292,17 @@ class AssetImporter:
         asset_path_abs = asset_path_abs_no_ext + '.blend'
 
         try:
+            if load and self._is_local_asset_mode(context):
+                return self._load_local_cached_object(
+                    context=context,
+                    asset_path_abs=asset_path_abs,
+                    asset_dir=asset_dir,
+                    asset_path=asset_path,
+                    umodel_export_dir=umodel_export_dir,
+                    game_profile=game_profile,
+                    db=db
+                )
+
             if not os.path.isfile(asset_path_abs):
                 self._import_asset_to_library(context=context, asset_library_dir=asset_dir, asset_path=asset_path,
                                               umodel_export_dir=umodel_export_dir, db=db, game_profile=game_profile)

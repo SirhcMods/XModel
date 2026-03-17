@@ -19,6 +19,8 @@ class UMODEL_PT_general(bpy.types.Panel):
         prefs = get_addon_preferences()
 
         col = layout.column(align=True)
+        if hasattr(scene, "umodel_asset_loading_mode"):
+            col.prop(scene, "umodel_asset_loading_mode")
         if hasattr(scene, "umodel_import_materials"):
             col.prop(scene, "umodel_import_materials")
         if hasattr(scene, "umodel_apply_override_materials"):
