@@ -430,11 +430,21 @@ def _build_landscape_slot_material(
             print(f"[LandscapeCompiler] Missing normal texture for {layer_info_name}: {normal_path}")
             continue
 
-        base_y = i * y_step
+        layer_slot_index = len(layer_entries)
+        base_y = layer_slot_index * y_step
+
+        frame = nodes.new("NodeFrame")
+        frame.label = f"Layer{layer_slot_index} | {layer_info_name} | {weightmap_name} | channel {weightmap_channel}"
+        frame.location = (-2100, base_y + 150)
+
+        channel_suffix = "RGBA"[weightmap_channel] if 0 <= weightmap_channel <= 3 else str(weightmap_channel)
 
         # Weightmap image
         weight_tex = nodes.new("ShaderNodeTexImage")
         weight_tex.location = (-1950, base_y)
+        weight_tex.name = f"Layer{layer_slot_index}_WM_{channel_suffix}"
+        weight_tex.label = f"Layer{layer_slot_index}_WM_{channel_suffix}"
+        weight_tex.parent = frame
         # Weightmap filenames repeat across different UMAPs, so force a unique
         # Blender image datablock name by appending the source UMAP id.
         unique_weightmap_image_name = f"{weightmap_name}_{umap_id}"
@@ -456,6 +466,9 @@ def _build_landscape_slot_material(
         raw_weight_sockets.append(raw_weight_socket)
 
         layer_entries.append({
+            "layer_slot_index": layer_slot_index,
+            "frame": frame,
+            "weight_tex": weight_tex,
             "layer_info_name": layer_info_name,
             "base_path": base_path,
             "normal_path": normal_path,
@@ -500,6 +513,8 @@ def _build_landscape_slot_material(
     last_normal_socket = None
 
     for i, entry in enumerate(layer_entries):
+        layer_slot_index = entry["layer_slot_index"]
+        frame = entry["frame"]
         layer_info_name = entry["layer_info_name"]
         base_path = entry["base_path"]
         normal_path = entry["normal_path"]
@@ -511,6 +526,9 @@ def _build_landscape_slot_material(
         # Base color
         base_tex = nodes.new("ShaderNodeTexImage")
         base_tex.location = (-750, base_y + 100)
+        base_tex.name = f"Layer{layer_slot_index}_D"
+        base_tex.label = f"Layer{layer_slot_index}_D"
+        base_tex.parent = frame
         base_tex.image = _get_or_load_image(base_path, non_color=False)
 
         base_input_socket = base_tex.outputs["Color"]
@@ -524,10 +542,16 @@ def _build_landscape_slot_material(
             macro_tex = nodes.new("ShaderNodeTexImage")
             macro_tex.image = macro_detail_img
             macro_tex.location = (-1100, base_y + 320)
+            macro_tex.name = f"Layer{layer_slot_index}_MacroDetail"
+            macro_tex.label = f"Layer{layer_slot_index}_MacroDetail"
+            macro_tex.parent = frame
 
             soil_tex = nodes.new("ShaderNodeTexImage")
             soil_tex.image = soil_detail_img
             soil_tex.location = (-1100, base_y + 180)
+            soil_tex.name = f"Layer{layer_slot_index}_SoilDetail"
+            soil_tex.label = f"Layer{layer_slot_index}_SoilDetail"
+            soil_tex.parent = frame
 
             macro_sep = nodes.new("ShaderNodeSeparateColor")
             macro_sep.location = (-900, base_y + 320)
@@ -575,10 +599,14 @@ def _build_landscape_slot_material(
         # Normal branch
         normal_tex = nodes.new("ShaderNodeTexImage")
         normal_tex.location = (-750, base_y - 140)
+        normal_tex.name = f"Layer{layer_slot_index}_N"
+        normal_tex.label = f"Layer{layer_slot_index}_N"
+        normal_tex.parent = frame
         normal_tex.image = _get_or_load_image(normal_path, non_color=True)
 
         normal_map = nodes.new("ShaderNodeNormalMap")
         normal_map.location = (-500, base_y - 140)
+        normal_map.parent = frame
         links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
 
         if last_color_socket is None:
@@ -598,9 +626,6 @@ def _build_landscape_slot_material(
             links.new(normal_map.outputs["Normal"], normal_mix.inputs["Color2"])
             last_normal_socket = normal_mix.outputs["Color"]
 
-        label = nodes.new("NodeFrame")
-        label.label = f"{layer_info_name} | {weightmap_name} | channel {weightmap_channel}"
-        label.location = (-2050, base_y + 150)
 
     if last_color_socket is not None:
         links.new(last_color_socket, bsdf.inputs["Base Color"])
