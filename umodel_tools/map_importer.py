@@ -588,6 +588,10 @@ class StaticMesh:
     # Per-component material overrides (slot-index aligned):
     # list entries are either None (no override) or (material_name, material_object_path)
     override_materials: t.Optional[list[t.Optional[tuple[str, str]]]] = None
+    per_instance_tint_ids: t.Optional[list[list[int]]] = None
+    per_instance_packet_width: t.Optional[int] = None
+    custom_primitive_tint_ids: t.Optional[list[int]] = None
+    custom_primitive_packet_width: t.Optional[int] = None
 
     # these are just properties to help with debugging
     no_entity: bool = False
@@ -658,6 +662,18 @@ class StaticMesh:
 
         self.asset_path = os.path.normpath(objpath + ".uasset")
         self.asset_path = self.asset_path[1:] if self.asset_path.startswith(os.sep) else self.asset_path
+
+        # MindsEye optional: extract component-level palette tint ids from CustomPrimitiveData.Data
+        try:
+            cpd = props.get('CustomPrimitiveData', None) if isinstance(props, dict) else None
+            cpd_data = cpd.get('Data', None) if isinstance(cpd, dict) else None
+            if isinstance(cpd_data, list) and cpd_data:
+                width = len(cpd_data)
+                self.custom_primitive_packet_width = int(width)
+                self.custom_primitive_tint_ids = color_palette_unwrapper.extract_tint_ids_from_packet(cpd_data, int(width))
+        except Exception:
+            self.custom_primitive_tint_ids = None
+            self.custom_primitive_packet_width = None
 
         match entity_type:
             case 'StaticMeshComponent':
@@ -855,6 +871,17 @@ class StaticMesh:
                 new_obj["_umodel_mesh_object_path"] = getattr(self, "mesh_object_path", "")
             except Exception:
                 pass
+
+            # MindsEye palette tint support for non-instanced components using CustomPrimitiveData.
+            use_unwrapper = _profile_feature_enabled("ENABLE_COLOR_PALETTE_UNWRAPPER")
+            if use_unwrapper:
+                try:
+                    tint_ids = getattr(self, 'custom_primitive_tint_ids', None)
+                    packet_width = getattr(self, 'custom_primitive_packet_width', None)
+                    if isinstance(tint_ids, list):
+                        color_palette_unwrapper.store_tint_custom_props(new_obj, tint_ids, packet_width=packet_width)
+                except Exception:
+                    pass
 
             if self.parent_mtx is None:
                 new_obj.scale = (trs.scale[0], trs.scale[1], trs.scale[2])
