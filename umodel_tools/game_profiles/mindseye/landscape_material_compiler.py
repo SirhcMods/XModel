@@ -216,12 +216,21 @@ def _resolve_weightmap_png(weightmap_root: str, umap_id: str, weightmap_name: st
     return None
 
 
-def _get_or_load_image(filepath: str, non_color: bool = False) -> bpy.types.Image:
+def _get_or_load_image(filepath: str,
+                       non_color: bool = False,
+                       desired_name: str | None = None) -> bpy.types.Image:
     filepath = _norm(filepath)
 
+    # Prefer exact filepath match first so repeated calls reuse the same datablock.
     for img in bpy.data.images:
         try:
             if _norm(img.filepath) == filepath:
+                if desired_name:
+                    try:
+                        if img.name != desired_name:
+                            img.name = desired_name
+                    except Exception:
+                        pass
                 if non_color:
                     try:
                         img.colorspace_settings.name = "Non-Color"
@@ -231,7 +240,38 @@ def _get_or_load_image(filepath: str, non_color: bool = False) -> bpy.types.Imag
         except Exception:
             continue
 
+    # If a datablock with the requested name already exists and points to the same file,
+    # reuse it directly.
+    if desired_name:
+        existing = bpy.data.images.get(desired_name)
+        if existing is not None:
+            try:
+                if _norm(existing.filepath) == filepath:
+                    if non_color:
+                        try:
+                            existing.colorspace_settings.name = "Non-Color"
+                        except Exception:
+                            pass
+                    return existing
+            except Exception:
+                pass
+
     img = bpy.data.images.load(filepath=filepath, check_existing=True)
+
+    if desired_name:
+        try:
+            img.name = desired_name
+        except Exception:
+            # Fall back to Blender's automatic uniquifying if the exact name is already taken.
+            base_name = desired_name
+            suffix = 1
+            while bpy.data.images.get(f"{base_name}.{suffix:03d}") is not None:
+                suffix += 1
+            try:
+                img.name = f"{base_name}.{suffix:03d}"
+            except Exception:
+                pass
+
     if non_color:
         try:
             img.colorspace_settings.name = "Non-Color"
@@ -395,7 +435,14 @@ def _build_landscape_slot_material(
         # Weightmap image
         weight_tex = nodes.new("ShaderNodeTexImage")
         weight_tex.location = (-1950, base_y)
-        weight_tex.image = _get_or_load_image(weightmap_png, non_color=True)
+        # Weightmap filenames repeat across different UMAPs, so force a unique
+        # Blender image datablock name by appending the source UMAP id.
+        unique_weightmap_image_name = f"{weightmap_name}_{umap_id}"
+        weight_tex.image = _get_or_load_image(
+            weightmap_png,
+            non_color=True,
+            desired_name=unique_weightmap_image_name,
+        )
         links.new(weight_uv.outputs["UV"], weight_tex.inputs["Vector"])
 
         raw_weight_socket = _make_weight_socket(
