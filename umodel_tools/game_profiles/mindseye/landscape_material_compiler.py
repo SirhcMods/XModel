@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import typing as t
 
 import bpy
@@ -215,6 +216,26 @@ def _resolve_weightmap_png(weightmap_root: str, umap_id: str, weightmap_name: st
                 return os.path.join(root, file_name)
     return None
 
+
+
+
+def _materialize_unique_weightmap_png(src_path: str, umap_id: str) -> str:
+    """Create a uniquely named copy of a weightmap PNG by appending the UMAP id.
+    Returns the path to the unique file. Leaves the original source untouched.
+    """
+    if not src_path or not os.path.exists(src_path):
+        return src_path
+
+    directory = os.path.dirname(src_path)
+    base = os.path.basename(src_path)
+    name, ext = os.path.splitext(base)
+    unique_name = f"{name}_{umap_id}{ext}"
+    unique_path = os.path.join(directory, unique_name)
+
+    if not os.path.exists(unique_path):
+        shutil.copy2(src_path, unique_path)
+
+    return unique_path
 
 def _get_or_load_image(filepath: str,
                        non_color: bool = False,
@@ -445,11 +466,13 @@ def _build_landscape_slot_material(
         weight_tex.name = f"Layer{layer_slot_index}_WM_{channel_suffix}"
         weight_tex.label = f"Layer{layer_slot_index}_WM_{channel_suffix}"
         weight_tex.parent = frame
-        # Weightmap filenames repeat across different UMAPs, so force a unique
-        # Blender image datablock name by appending the source UMAP id.
+        # Weightmap filenames repeat across different UMAPs. Create a uniquely
+        # named PNG on disk by appending the source UMAP id before loading it,
+        # and keep the Blender image datablock name in sync.
+        unique_weightmap_png = _materialize_unique_weightmap_png(weightmap_png, umap_id)
         unique_weightmap_image_name = f"{weightmap_name}_{umap_id}"
         weight_tex.image = _get_or_load_image(
-            weightmap_png,
+            unique_weightmap_png,
             non_color=True,
             desired_name=unique_weightmap_image_name,
         )
